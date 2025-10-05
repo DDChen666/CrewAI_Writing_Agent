@@ -1,0 +1,273 @@
+{
+  "platform": "reddit",
+  "subreddit": "ArtificialInteligence",
+  "scraped_at": "2025-10-05T17:15:54.433789",
+  "items": [
+    {
+      "id": "1nysb6t",
+      "permalink": "https://www.reddit.com/r/ArtificialInteligence/comments/1nysb6t/why_do_people_hate_deepseek_so_much/",
+      "title": "Why do people hate deepseek so much?",
+      "selftext": "I personally don't see anything wrong with it, but people are saying it is unreliable and prefer to use things like ChatGPT instead.\n\nDoes anybody else relate or is it just me?",
+      "created_utc": 1759680636.0,
+      "author": "makstyrkin64",
+      "statistics": {
+        "score": 3,
+        "upvote_ratio": 0.62,
+        "num_comments": 30
+      },
+      "flair": "Discussion",
+      "over_18": false,
+      "url": "https://www.reddit.com/r/ArtificialInteligence/comments/1nysb6t/why_do_people_hate_deepseek_so_much/",
+      "media": {
+        "is_video": false,
+        "post_hint": null,
+        "preview": null
+      },
+      "comments": [
+        {
+          "id": "nhwuyry",
+          "author": "AutoModerator",
+          "body": "## Welcome to the r/ArtificialIntelligence gateway\n### Question Discussion Guidelines\n\n---\n\nPlease use the following guidelines in current and future posts:\n\n* Post must be greater than 100 characters - the more detail, the better.\n* Your question might already have been answered. Use the search feature if no one is engaging in your post.\n    * AI is going to take our jobs - its been asked a lot!\n* Discussion regarding positives and negatives about AI are allowed and encouraged. Just be respectful.\n* Please provide links to back up your arguments.\n* No stupid questions, unless its about AI being the beast who brings the end-times. It's not.\n\n###### Thanks - please let mods know if you have any questions / comments / etc\n\n*I am a bot, and this action was performed automatically. Please [contact the moderators of this subreddit](/message/compose/?to=/r/ArtificialInteligence) if you have any questions or concerns.*",
+          "score": 1,
+          "created_utc": 1759680636.0
+        },
+        {
+          "id": "nhwvfht",
+          "author": "kevbot029",
+          "body": "Chinese",
+          "score": 19,
+          "created_utc": 1759680772.0
+        },
+        {
+          "id": "nhwxawt",
+          "author": "Jaded_Taste_5758",
+          "body": "China; geopolitics. Might be good as any, but I never tried it only for these reasons.",
+          "score": 8,
+          "created_utc": 1759681319.0
+        },
+        {
+          "id": "nhwy87v",
+          "author": "im_just_using_logic",
+          "body": "CHOINAHH?!?!",
+          "score": 8,
+          "created_utc": 1759681585.0
+        },
+        {
+          "id": "nhwyhbd",
+          "author": "Ok_Sky_555",
+          "body": "Afaik, as a model, it is okeish.\nAs a product it is politically moderated and insecure.\n\n\nIt does not even pretend to care about things like gdpr or privacy. On top of that it's security is questionable - all chat logs and API keys were already found in an unprotected database.",
+          "score": 4,
+          "created_utc": 1759681657.0
+        },
+        {
+          "id": "nhwwj0c",
+          "author": "boutell",
+          "body": "For anyone else saying \"huh?\"\n\nhttps://www.techrepublic.com/article/news-deepseek-security-gaps-caisi-study/\n\nThis article says an independent study found it inferior to gpt5 on a lot of benchmarks and also a lot less safe, which you may view as a good or a bad thing, and a lot more likely to give propaganda answers, which does concern me.\n\nIt's not cheaper either, apparently, to get the same quality of answer, at least on an API basis.",
+          "score": 3,
+          "created_utc": 1759681095.0
+        },
+        {
+          "id": "nhx5x9g",
+          "author": "sir_racho",
+          "body": "I preferred the personality of ChatGPT. Took me a while to realise that was the difference. Since ChatGPT 5 it’s a bit sterile but I don’t want to change things right now  ",
+          "score": 1,
+          "created_utc": 1759683837.0
+        },
+        {
+          "id": "nhwzkyi",
+          "author": "ShortDickBigEgo",
+          "body": "I used it but the next day my Taiwanese wife was gone",
+          "score": 2,
+          "created_utc": 1759681976.0
+        },
+        {
+          "id": "nhwvtjs",
+          "author": "jakegh",
+          "body": "It is unreliable, their official API is slow and goes down all the time.\n\nIt's also Chinese, but so is GLM (Z.ai) and nobody has a problem with them. Difference is their API is stable and fast (and they offer a cheap coding plan!).",
+          "score": 1,
+          "created_utc": 1759680886.0
+        },
+        {
+          "id": "nhwwmm8",
+          "author": "dashosh",
+          "body": "Who hates it? Deepseek does its job for the amazing price unless you do smth that violates their censorship. ChatGPT and Claude also have limits.",
+          "score": 1,
+          "created_utc": 1759681124.0
+        },
+        {
+          "id": "nhwwtti",
+          "author": "KhmunTheoOrion",
+          "body": "deepseek got their popularity in the west when they open-weighted their R1 reasoning model iirc.\n\nTheir rep is in the openness, not necessarily in performance vs closed model/services.",
+          "score": 1,
+          "created_utc": 1759681182.0
+        },
+        {
+          "id": "nhwyld5",
+          "author": "Exotic-Command-9942",
+          "body": "Its deprecated.",
+          "score": 1,
+          "created_utc": 1759681689.0
+        },
+        {
+          "id": "nhx3rc9",
+          "author": "Massive_Connection42",
+          "body": "chinas AI is ironically less censored than Open AI",
+          "score": 1,
+          "created_utc": 1759683199.0
+        },
+        {
+          "id": "nhx4ffp",
+          "author": "dsartori",
+          "body": "Probably committed to legacy U.S. services but that’s OK - the world will migrate off all that shit soon.",
+          "score": 1,
+          "created_utc": 1759683396.0
+        },
+        {
+          "id": "nhx7afk",
+          "author": "gaglo_kentchadze",
+          "body": "deep seek is stupid because of that we have qwen we have gemine we have claude we have chatGPT why people need chinise product",
+          "score": 1,
+          "created_utc": 1759684236.0
+        },
+        {
+          "id": "nhx7c5b",
+          "author": "MaybeLiterally",
+          "body": "I’ve used it a handful of times, but it didn’t impress me compared to other models, and that’s mostly the reason. Add to that, i’m not sure how much I trust it with my data. Also, I like to support American innovation, I’m invested in their success.",
+          "score": 1,
+          "created_utc": 1759684250.0
+        },
+        {
+          "id": "nhx7lve",
+          "author": "Prestigious-Text8939",
+          "body": "Most people fear what challenges their expensive habits and DeepSeek just made a lot of ChatGPT subscriptions look like premium water bottles.",
+          "score": 1,
+          "created_utc": 1759684328.0
+        },
+        {
+          "id": "nhx7xpn",
+          "author": "ponzy1981",
+          "body": "I am concerned about Chinese using information for government intelligence.   They have no concept of privacy there.",
+          "score": 1,
+          "created_utc": 1759684422.0
+        }
+      ]
+    },
+    {
+      "id": "1nyrjxm",
+      "permalink": "https://www.reddit.com/r/ArtificialInteligence/comments/1nyrjxm/ai_in_the_military_testing_a_new_kind_of_air_force/",
+      "title": "\"AI in the military: Testing a new kind of air force\"",
+      "selftext": "[https://www.cbsnews.com/news/ai-in-the-military-testing-a-new-kind-of-air-force/](https://www.cbsnews.com/news/ai-in-the-military-testing-a-new-kind-of-air-force/) \n\n\"Retired Air Force Lt. Gen. Clint Hinote says it is a revolution born of necessity: \"The Air Force was so good for so long that it didn't need to change. Now it needs to change, and it's trying to figure out how.\"\n\nChange because the Chinese air force, which recently  showcased its newest jet fighters and its own AI drone, could be more than a match for the U.S. Air Force. According to Hinote, \"If we have to fight China, we're likely doing it in their front yard, and that means they can bring many, many more things to bear than we can, because it's so far away. You're having to achieve kill ratios of 10 to 1, 15 to 1, and 20 to 1 to even stay in the game.\"\n\nI asked, \"How do these war games come out when American pilots are going up against 20 to 1 odds?\"\n\n\"The war games don't turn out very well,\" Hinote replied. \"We lose.\"\"",
+      "created_utc": 1759678925.0,
+      "author": "AngleAccomplished865",
+      "statistics": {
+        "score": 9,
+        "upvote_ratio": 0.85,
+        "num_comments": 12
+      },
+      "flair": "Discussion",
+      "over_18": false,
+      "url": "https://www.reddit.com/r/ArtificialInteligence/comments/1nyrjxm/ai_in_the_military_testing_a_new_kind_of_air_force/",
+      "media": {
+        "is_video": false,
+        "post_hint": null,
+        "preview": null
+      },
+      "comments": [
+        {
+          "id": "nhwp0z8",
+          "author": "AutoModerator",
+          "body": "## Welcome to the r/ArtificialIntelligence gateway\n### Question Discussion Guidelines\n\n---\n\nPlease use the following guidelines in current and future posts:\n\n* Post must be greater than 100 characters - the more detail, the better.\n* Your question might already have been answered. Use the search feature if no one is engaging in your post.\n    * AI is going to take our jobs - its been asked a lot!\n* Discussion regarding positives and negatives about AI are allowed and encouraged. Just be respectful.\n* Please provide links to back up your arguments.\n* No stupid questions, unless its about AI being the beast who brings the end-times. It's not.\n\n###### Thanks - please let mods know if you have any questions / comments / etc\n\n*I am a bot, and this action was performed automatically. Please [contact the moderators of this subreddit](/message/compose/?to=/r/ArtificialInteligence) if you have any questions or concerns.*",
+          "score": 1,
+          "created_utc": 1759678925.0
+        },
+        {
+          "id": "nhwqm3p",
+          "author": "AtLeastTryALittle",
+          "body": "Is the AI required to be clean shaven? That's the real priority here.",
+          "score": 5,
+          "created_utc": 1759679378.0
+        },
+        {
+          "id": "nhx7ncu",
+          "author": "Prestigious-Text8939",
+          "body": "We used to dominate through superior training and tech but now we need to dominate through superior systems that multiply human capability by orders of magnitude.",
+          "score": 1,
+          "created_utc": 1759684340.0
+        },
+        {
+          "id": "nhwtvl7",
+          "author": "Competitive-Cut7712",
+          "body": "Ai is not a new invention as it is rumored. It has been around for a very long time and most armies are already using it\n\nAdding artificial intelligence to devices will not turn them into gods as many imagine, and you may not need a strong AI in most devices",
+          "score": 0,
+          "created_utc": 1759680319.0
+        },
+        {
+          "id": "nhwxr3s",
+          "author": "Bannedwith1milKarma",
+          "body": "A Drone will not have AI.\n\nIt will have programmed actions based on observation and input.\n\nIt's pretty much an 'If --&gt; then' statement. With manual takeover and action control both by the lead pilot and homebase.",
+          "score": -1,
+          "created_utc": 1759681451.0
+        }
+      ]
+    },
+    {
+      "id": "1nypwt0",
+      "permalink": "https://www.reddit.com/r/ArtificialInteligence/comments/1nypwt0/a_real_question_about_ai_and_monkeys/",
+      "title": "A real question about AI and monkeys?",
+      "selftext": "Hi there,\n\nYesterday I had a thought that I could figure or imagine an answer for it and it goes this way ….\n\nI believe that most of us here (if not all of us) have heard that if we had an infinite number of monkeys are all the time are hitting the strokes of a typewriter, eventually one monkey will be generate a Shakespearean play.\n\nMy question…..\n\nIf we have an infinite number of monkeys that are typing on the keyboard that writes a prompt to an AI, would we eventually see a Shakespearean play???",
+      "created_utc": 1759675082.0,
+      "author": "NBelal",
+      "statistics": {
+        "score": 0,
+        "upvote_ratio": 0.36,
+        "num_comments": 7
+      },
+      "flair": "Discussion",
+      "over_18": false,
+      "url": "https://www.reddit.com/r/ArtificialInteligence/comments/1nypwt0/a_real_question_about_ai_and_monkeys/",
+      "media": {
+        "is_video": false,
+        "post_hint": null,
+        "preview": null
+      },
+      "comments": [
+        {
+          "id": "nhwc51g",
+          "author": "AutoModerator",
+          "body": "## Welcome to the r/ArtificialIntelligence gateway\n### Question Discussion Guidelines\n\n---\n\nPlease use the following guidelines in current and future posts:\n\n* Post must be greater than 100 characters - the more detail, the better.\n* Your question might already have been answered. Use the search feature if no one is engaging in your post.\n    * AI is going to take our jobs - its been asked a lot!\n* Discussion regarding positives and negatives about AI are allowed and encouraged. Just be respectful.\n* Please provide links to back up your arguments.\n* No stupid questions, unless its about AI being the beast who brings the end-times. It's not.\n\n###### Thanks - please let mods know if you have any questions / comments / etc\n\n*I am a bot, and this action was performed automatically. Please [contact the moderators of this subreddit](/message/compose/?to=/r/ArtificialInteligence) if you have any questions or concerns.*",
+          "score": 1,
+          "created_utc": 1759675082.0
+        },
+        {
+          "id": "nhwhdzz",
+          "author": "reddit455",
+          "body": "&gt;we had an infinite number of monkeys\n\n  \nplease calculate or observe \"infinite\"",
+          "score": 3,
+          "created_utc": 1759676644.0
+        },
+        {
+          "id": "nhwkz8w",
+          "author": "Lie2gether",
+          "body": "You either don't understand or I missed the joke.",
+          "score": 2,
+          "created_utc": 1759677712.0
+        },
+        {
+          "id": "nhwcreb",
+          "author": "deavidsedice",
+          "body": "Yes, because one monkey would just type it directly on the prompt and ask the AI to repeat it verbatim. \n\nAnd since AI has read Shakespeare, there are plenty of prompts that would give that outcome too",
+          "score": 1,
+          "created_utc": 1759675270.0
+        },
+        {
+          "id": "nhwd671",
+          "author": "Mandoman61",
+          "body": "No we will all die before that happens.",
+          "score": 1,
+          "created_utc": 1759675393.0
+        }
+      ]
+    }
+  ],
+  "source": "reddit_json"
+}
