@@ -1,2 +1,2 @@
 requests
-snscrape
+snscrape @ git+https://github.com/JustAnotherArchivist/snscrape@master
