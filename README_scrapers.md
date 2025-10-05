@@ -1,6 +1,9 @@
 # Scrapers Setup Guide
 
-This document explains how to configure the Python environment and run the Reddit, Facebook, Threads, and X scrapers used by `scraepr_test1.py`.
+This document explains how to configure the Python environment and run the Reddit scraper used by `scraepr_test1.py`.
+
+> [!NOTE]
+> As of the last update, only the Reddit scraper in `scrapers/` is operational. The Facebook, Threads, and X/Twitter implementations are present in the repository but currently fail at runtime. Keep an eye on future updates if you need those adapters.
 
 > [!IMPORTANT]
 > The X/Twitter workflow is temporarily unavailable in this environment because outbound requests to the supported endpoints are blocked. The CLI still exposes the interface for completeness, but executions will raise a network error until connectivity is restored.
@@ -35,12 +38,9 @@ pip install -r requirement.txt
 The `requirement.txt` file includes the core dependencies (`requests`, `facebook-scraper`, `snscrape`).
 
 ## Running the scrapers
-Use the CLI entry point `scraepr_test1.py` to scrape specific platforms:
+Use the CLI entry point `scraepr_test1.py` to scrape Reddit:
 ```bash
 python scraepr_test1.py reddit <subreddit>
-python scraepr_test1.py facebook <full_facebook_url>
-python scraepr_test1.py threads <threads_url>
-python scraepr_test1.py x <username>  # will currently fail because the upstream endpoints are blocked
 ```
 
 Additional options:
@@ -50,15 +50,27 @@ Additional options:
 
 Scraped data is saved under the directory defined by `output_root` in `scraper.json` (defaults to `scraepr/`). Each run creates a timestamped JSON file.
 
+### Inactive scrapers
+
+The following entry points remain in the script for future repair work but will currently error if invoked:
+
+```bash
+python scraepr_test1.py facebook <full_facebook_url>
+python scraepr_test1.py threads <threads_url>
+python scraepr_test1.py x <username>
+```
+
+They are documented here so you can recognize the intended interface when maintenance resumes.
+
 ### Smoke tests for preset targets
 
-To execute the four demo scenarios described in the main task, run:
+To execute the demo scenario for Reddit, run:
 
 ```bash
 python scraepr_test1.py tests
 ```
 
-This command sequentially runs the Facebook and Threads scrapers (both primary and fallback strategies) against the provided public targets, logging success or any network issues encountered.
+This command currently validates only the Reddit workflow. The Facebook, Threads, and X checks remain disabled because their scrapers are broken.
 
 ## Deactivate the environment
 When you are done:
