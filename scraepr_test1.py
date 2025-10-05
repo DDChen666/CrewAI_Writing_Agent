@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
+import logging
 from scrapers.reddit.fallback_scraper import scrape_reddit_via_pullpush
 from scrapers.reddit.main_scraper import fetch_subreddit_posts
 from scrapers.x.fallback_scraper import scrape_x_via_nitter
@@ -35,6 +36,9 @@ def write_output(path: Path, payload: Dict[str, Any]) -> None:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
 
 
+logger = logging.getLogger(__name__)
+
+
 def run_x_scraper(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str, Any]:
     platform_conf = config.get("x", {})
     limit = args.limit or platform_conf.get("max_posts", 50)
@@ -48,7 +52,8 @@ def run_x_scraper(args: argparse.Namespace, config: Dict[str, Any]) -> Dict[str,
             skip_media=skip_media,
             thread_limit=thread_limit,
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("snscrape failed for %s, falling back to Nitter: %s", args.target, exc)
         instances = platform_conf.get("nitter_instances", [])
         timeout = platform_conf.get("request_timeout", 10)
         retries = platform_conf.get("max_retries", 2)
@@ -105,6 +110,8 @@ def main() -> None:
     args = parse_args()
     config = load_config()
     output_root = Path(config.get("output_root", "scraepr"))
+
+    logging.basicConfig(level=logging.INFO)
 
     if args.platform == "x":
         payload = run_x_scraper(args, config)
