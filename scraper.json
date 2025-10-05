@@ -30,5 +30,19 @@
     "request_timeout": 10,
     "max_retries": 2
   },
+  "facebook": {
+    "primary": "facebook_scraper",
+    "fallback": "rsshub",
+    "max_posts": 25,
+    "include_comments": true,
+    "include_media": true,
+    "request_timeout": 20
+  },
+  "threads": {
+    "primary": "threads_net",
+    "fallback": "rsshub",
+    "max_posts": 25,
+    "request_timeout": 20
+  },
   "output_root": "scraepr"
 }
