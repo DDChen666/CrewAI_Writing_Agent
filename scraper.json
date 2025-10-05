@@ -1,0 +1,34 @@
+{
+  "x": {
+    "primary": "snscrape",
+    "fallback": "nitter",
+    "max_posts": 50,
+    "skip_media_posts": true,
+    "thread_depth_limit": 50,
+    "nitter_instances": [
+      "https://xcancel.com",
+      "https://nitter.poast.org",
+      "https://nitter.privacyredirect.com",
+      "https://lightbrd.com",
+      "https://nitter.space",
+      "https://nitter.tiekoetter.com",
+      "https://nuku.trabun.org",
+      "https://nitter.fdn.fr",
+      "https://nitter.lacontrevoie.fr",
+      "https://nitter.net"
+    ],
+    "request_timeout": 15,
+    "max_retries": 6
+  },
+  "reddit": {
+    "primary": "reddit_json",
+    "fallback": "pullpush",
+    "max_posts": 50,
+    "skip_media_posts": true,
+    "comment_depth": 2,
+    "pullpush_base": "https://api.pullpush.io/reddit/search/submission/",
+    "request_timeout": 10,
+    "max_retries": 2
+  },
+  "output_root": "scraepr"
+}
