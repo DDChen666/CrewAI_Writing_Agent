@@ -1,2 +1,3 @@
 requests
+facebook-scraper
 snscrape @ git+https://github.com/JustAnotherArchivist/snscrape@master
