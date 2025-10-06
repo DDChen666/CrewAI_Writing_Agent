@@ -274,6 +274,21 @@ class RedditDatasetExportArgs(BaseModel):
     )
 
 
+class RedditDatasetLookupArgs(BaseModel):
+    dataset_id: str = Field(..., description="Identifier associated with a stored dataset")
+    post_ids: Optional[List[str]] = Field(
+        None,
+        description="Optional list of post_ids to retrieve. When omitted the tool returns the first `limit` items.",
+    )
+    limit: Optional[int] = Field(
+        None,
+        ge=1,
+        le=500,
+        description="Maximum number of posts to return when post_ids is not supplied.",
+    )
+    include_metadata: bool = Field(False, description="Whether to include dataset metadata in the response")
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -574,14 +589,59 @@ class RedditDatasetExportTool(BaseTool):
         return json.dumps(export_payload, ensure_ascii=False)
 
 
+class RedditDatasetLookupTool(BaseTool):
+    name: str = "reddit_dataset_lookup"
+    description: str = (
+        "Retrieve specific posts from a stored dataset using post_ids or by applying a simple limit for sampling."
+    )
+    args_schema = RedditDatasetLookupArgs
+
+    def _run(  # type: ignore[override]
+        self,
+        dataset_id: str,
+        post_ids: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        include_metadata: bool = False,
+    ) -> str:
+        try:
+            dataset = _DATASET_STORE.get(dataset_id)
+        except ValueError as exc:
+            return json.dumps(
+                {"status": "error", "message": str(exc), "tool": self.name},
+                ensure_ascii=False,
+            )
+
+        working_items = list(dataset.items)
+
+        if post_ids:
+            requested = {pid for pid in post_ids}
+            working_items = [item for item in working_items if str(item.get("post_id")) in requested]
+        elif limit is not None:
+            working_items = working_items[:limit]
+
+        payload: Dict[str, Any] = {
+            "status": "success",
+            "tool": self.name,
+            "dataset_id": dataset_id,
+            "item_count": len(working_items),
+            "items": working_items,
+        }
+        if include_metadata:
+            payload["metadata"] = dataset.metadata
+
+        return json.dumps(payload, ensure_ascii=False)
+
+
 reddit_scrape_locator_tool = RedditScrapeLocatorTool()
 reddit_scrape_loader_tool = RedditScrapeLoaderTool()
 reddit_dataset_filter_tool = RedditDatasetFilterTool()
 reddit_dataset_export_tool = RedditDatasetExportTool()
+reddit_dataset_lookup_tool = RedditDatasetLookupTool()
 
 __all__ = [
     "reddit_scrape_locator_tool",
     "reddit_scrape_loader_tool",
     "reddit_dataset_filter_tool",
     "reddit_dataset_export_tool",
+    "reddit_dataset_lookup_tool",
 ]
