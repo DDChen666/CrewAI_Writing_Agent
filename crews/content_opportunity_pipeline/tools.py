@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field, RootModel
@@ -300,7 +300,7 @@ class RedditScrapeLocatorTool(BaseTool):
         "Discover available Reddit scrape JSON files. Use this to identify which files should "
         "be loaded before running any filtering or analysis."
     )
-    args_schema = RedditLocatorArgs
+    args_schema: Type[BaseModel] = RedditLocatorArgs
 
     def _run(  # type: ignore[override]
         self,
@@ -335,15 +335,45 @@ class RedditScrapeLocatorTool(BaseTool):
             candidate_paths.extend(directory.rglob("*.json"))
 
         file_infos: List[Dict[str, Any]] = []
+        skipped_files: List[Dict[str, str]] = []
         for path in candidate_paths:
             try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
+                raw_text = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                skipped_files.append(
+                    {
+                        "path": str(path.as_posix()),
+                        "reason": f"read_error: {exc.__class__.__name__}",
+                    }
+                )
                 continue
+
+            try:
+                payload: Any = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                skipped_files.append(
+                    {
+                        "path": str(path.as_posix()),
+                        "reason": f"json_decode_error: {exc.msg}",
+                    }
+                )
+                continue
+
+            if not isinstance(payload, dict):
+                skipped_files.append(
+                    {
+                        "path": str(path.as_posix()),
+                        "reason": f"unsupported_payload_type: {type(payload).__name__}",
+                    }
+                )
+                continue
+
             if platform and payload.get("platform") != platform:
                 continue
             scraped_at = payload.get("scraped_at")
             stat = path.stat()
+            items = payload.get("items")
+            item_count = len(items) if isinstance(items, list) else 0
             file_infos.append(
                 {
                     "path": str(path.as_posix()),
@@ -351,7 +381,7 @@ class RedditScrapeLocatorTool(BaseTool):
                     "modified": datetime.utcfromtimestamp(stat.st_mtime).isoformat() + "Z",
                     "scraped_at": scraped_at,
                     "subreddit": payload.get("subreddit"),
-                    "item_count": len(payload.get("items", [])),
+                    "item_count": item_count,
                 }
             )
 
@@ -366,6 +396,7 @@ class RedditScrapeLocatorTool(BaseTool):
                 "tool": self.name,
                 "count": min(len(file_infos), limit),
                 "files": file_infos[:limit],
+                "warnings": skipped_files,
             },
             ensure_ascii=False,
         )
@@ -376,7 +407,7 @@ class RedditScrapeLoaderTool(BaseTool):
     description: str = (
         "Load Reddit scrape JSON files, normalise their structure and optionally sort or filter the posts."
     )
-    args_schema = RedditLoaderArgs
+    args_schema: Type[BaseModel] = RedditLoaderArgs
 
     def _filter_item(self, item: Dict[str, Any], filters: Optional[List[FilterCondition]]) -> bool:
         if not filters:
@@ -467,7 +498,7 @@ class RedditScrapeLoaderTool(BaseTool):
 class RedditDatasetFilterTool(BaseTool):
     name: str = "reddit_dataset_filter"
     description: str = "Apply additional filters or sorting to a stored dataset and return a new dataset identifier."
-    args_schema = RedditDatasetFilterArgs
+    args_schema: Type[BaseModel] = RedditDatasetFilterArgs
 
     def _run(  # type: ignore[override]
         self,
@@ -531,7 +562,7 @@ class RedditDatasetExportTool(BaseTool):
     description: str = (
         "Produce a cleaned content stream payload from a stored dataset so downstream agents can consume it."
     )
-    args_schema = RedditDatasetExportArgs
+    args_schema: Type[BaseModel] = RedditDatasetExportArgs
 
     def _run(  # type: ignore[override]
         self,
@@ -594,7 +625,7 @@ class RedditDatasetLookupTool(BaseTool):
     description: str = (
         "Retrieve specific posts from a stored dataset using post_ids or by applying a simple limit for sampling."
     )
-    args_schema = RedditDatasetLookupArgs
+    args_schema: Type[BaseModel] = RedditDatasetLookupArgs
 
     def _run(  # type: ignore[override]
         self,
