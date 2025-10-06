@@ -43,7 +43,7 @@ pip install -r requirement.txt
 ## 執行方式
 以自然語言下指令，代理會決定如何呼叫工具並回傳 JSON：
 ```bash
-python run_reddit_agent.py "請抓取 r/Python 最新 30 則貼文（略過含媒體），並附每篇前 2 層留言"
+python run_reddit_agent.py "抓取 r/python sort by hot 的前兩篇，無需留言，需含圖片影片等媒體"
 ```
 
 更多範例：
