@@ -1,0 +1,12 @@
+agent: reddit_scraper
+agent_version: 1
+task: "1"
+metadata:
+  label: top_three_hot_posts
+  description: >-
+    擷取 r/news 子版面中最新的三篇熱門貼文，輸出標題、作者、發文時間與連結，
+    並將結果整理為 JSON。
+prompt: |
+  請協助我從 r/news 子版面中蒐集最新的三篇熱門貼文，
+  並輸出每篇貼文的標題、作者、發文時間與連結，
+  最後將結果整理成 JSON 格式返回。
