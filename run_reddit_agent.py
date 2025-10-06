@@ -26,9 +26,27 @@ from crews.reddit_scraper.tools import (
 
 CONFIG_PATH = Path(__file__).with_name("scraper.json")
 DEFAULT_PROMPTS = {
-    "1": Path(__file__).with_name("Default_Tasks1.YML"),
+    "1": {
+        "path": Path(__file__).with_name("Default_Tasks1.YML"),
+        "agent": "reddit_scraper",
+        "task": "1",
+    },
 }
 PROMPT_KEY = "prompt"
+
+
+def _extract_scalar_value(lines: list[str], key: str) -> Optional[str]:
+    prefix = f"{key}:"
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped.startswith(prefix):
+            value = stripped[len(prefix) :].strip()
+            if value.startswith(("'", '"')) and value.endswith(("'", '"')) and len(value) >= 2:
+                value = value[1:-1]
+            return value or None
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -99,13 +117,30 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
-def _load_prompt_from_file(path: Path) -> str:
+def _load_prompt_from_file(
+    path: Path,
+    *,
+    expected_agent: Optional[str] = None,
+    expected_task: Optional[str] = None,
+) -> str:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Unable to read prompt file: {path}") from exc
 
     lines = content.splitlines()
+    agent_identifier = _extract_scalar_value(lines, "agent")
+    task_identifier = _extract_scalar_value(lines, "task")
+
+    if expected_agent is not None and agent_identifier != expected_agent:
+        raise RuntimeError(
+            f"Prompt file {path} is intended for agent '{agent_identifier}' not '{expected_agent}'"
+        )
+    if expected_task is not None and (task_identifier or "") != str(expected_task):
+        raise RuntimeError(
+            f"Prompt file {path} does not contain the expected task '{expected_task}'"
+        )
+
     prompt_lines = []
     capture = False
     indent = None
@@ -143,12 +178,17 @@ def _load_prompt_from_file(path: Path) -> str:
 
 
 def _resolve_prompt(prompt_arg: str) -> str:
-    prompt_path = DEFAULT_PROMPTS.get(prompt_arg)
-    if prompt_path is None:
+    prompt_entry = DEFAULT_PROMPTS.get(prompt_arg)
+    if prompt_entry is None:
         return prompt_arg
+    prompt_path = prompt_entry["path"]
     if not prompt_path.exists():
         raise FileNotFoundError(f"Default prompt file not found: {prompt_path}")
-    return _load_prompt_from_file(prompt_path)
+    return _load_prompt_from_file(
+        prompt_path,
+        expected_agent=prompt_entry.get("agent"),
+        expected_task=prompt_entry.get("task"),
+    )
 
 
 def main() -> None:
