@@ -1,0 +1,35 @@
+agent: reddit_scraper
+agent_version: 1
+task: "1"
+metadata:
+  label: top_three_hot_posts
+  description: >-
+    擷取 r/news 子版面中最新的三篇熱門貼文，輸出標題、作者、發文時間與連結，
+    並將結果整理為 JSON。
+prompt: |
+  請協助我從 r/news 子版面中蒐集最新的三篇熱門貼文，
+  並輸出每篇貼文的標題、作者、發文時間與連結，
+  最後將結果整理成 JSON 格式返回。
+---
+agent: content_opportunity_pipeline
+agent_version: 1
+task: content_pipeline_default
+brand_knowledge_base: Brand_Core_Knowledge_Base_for_justka.ai.yml
+metadata:
+  label: justka_content_opportunity
+  description: >-
+    啟動 Content Opportunity Pipeline，根據最新的品牌知識庫評估 Reddit 趨勢，
+    產出符合 JustKa AI 品牌定位的內容機會與優先製作清單。
+prompt: |
+  請扮演 JustKa AI 的內容機會評估小組。遵循以下流程：
+    1. 使用 Data Triage Agent 讀取 operator 的需求並定位最新的 Reddit 資料，
+       只透過提供的工具完成篩選、去重與輸出 Cleaned_Content_Stream。
+    2. 交給 Trend Analysis Agent 進行語意分群，計算動能、加速度與情緒標籤，
+       並建立 Identified_Trends_Report。
+    3. 引導 Brand Alignment Agent 參考 {{brand_knowledge_base}} 所提供的品牌守則，
+       評估每個趨勢的相關性、ICP 契合度、漏斗階段與風險，產出排序後的
+       Scored_And_Filtered_Opportunities。
+    4. 最後由 Topic Curator Agent 選出 1-3 個最高優先的主題，撰寫 Prioritized_Topic_Brief，
+       提供 3-5 個內容角度、關鍵洞察與參考來源。
+  請回傳最終的 Prioritized_Topic_Brief JSON，同時保留過程中產生的 dataset_id 與關聯資訊，
+  以便營運團隊可以追溯來源並擴充分析。
