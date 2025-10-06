@@ -37,6 +37,19 @@ pip install -r requirement.txt
 
 The `requirement.txt` file includes the core dependencies (`requests`, `facebook-scraper`, `snscrape`).
 
+## Configure Reddit credentials
+The Reddit scraper now authenticates via the official Reddit Data API. Set up your credentials before running it:
+
+1. Copy `.env.example` to `.env` (or export the variables directly in your shell).
+2. Fill in the following keys with the values from your Reddit application:
+   - `REDDIT_CLIENT_ID`
+   - `REDDIT_CLIENT_SECRET`
+   - `REDDIT_USER_AGENT` (e.g. `myscript/1.0 by u/your_username`)
+3. The scraper automatically loads `.env` and will raise an error if any value is missing.
+
+> [!TIP]
+> Official credentials significantly reduce rate limiting and ensure the workflow remains compliant with Reddit's Terms of Service.
+
 ## Running the scrapers
 Use the CLI entry point `scraepr_test1.py` to scrape Reddit:
 ```bash
