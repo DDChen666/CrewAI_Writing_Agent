@@ -1,22 +1,10 @@
-"""Primary scraper for Reddit using the public JSON endpoints."""
+"""Primary scraper for Reddit using the official OAuth Data API."""
 from __future__ import annotations
 
 import datetime as dt
 from typing import Any, Dict, List, Optional
 
-import requests
-
-
-USER_AGENT = "Mozilla/5.0 (compatible; scraper-bot/1.0)"
-
-
-def _build_listing_url(subreddit: str, limit: int, after: Optional[str] = None) -> str:
-    base = f"https://www.reddit.com/r/{subreddit}/new.json"
-    params = {"limit": min(limit, 100)}
-    if after:
-        params["after"] = after
-    query = "&".join(f"{key}={value}" for key, value in params.items())
-    return f"{base}?{query}"
+from .oauth_client import RedditOAuthClient
 
 
 def _has_media(post_data: Dict[str, Any]) -> bool:
@@ -26,30 +14,45 @@ def _has_media(post_data: Dict[str, Any]) -> bool:
         return True
     if post_data.get("media_metadata") or post_data.get("gallery_data"):
         return True
-    if post_data.get("url_overridden_by_dest") and post_data.get("url_overridden_by_dest").startswith("https://i.redd.it"):
+    if post_data.get("url_overridden_by_dest") and post_data.get("url_overridden_by_dest").startswith(
+        "https://i.redd.it"
+    ):
         return True
     return False
 
 
-def _fetch_comments(permalink: str, depth: int, timeout: int) -> List[Dict[str, Any]]:
-    url = f"https://www.reddit.com{permalink}.json?limit=50&depth={depth}"
-    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-    response.raise_for_status()
-    payload = response.json()
-    if len(payload) < 2:
+def _fetch_comments(
+    client: RedditOAuthClient,
+    permalink: str,
+    *,
+    depth: int,
+    timeout: int,
+) -> List[Dict[str, Any]]:
+    if not permalink:
         return []
+
+    endpoint = f"{permalink}.json" if permalink.startswith("/r/") else permalink
+    payload = client.get(endpoint, params={"depth": depth, "limit": 50}, timeout=timeout)
+
+    if not isinstance(payload, list) or len(payload) < 2:
+        return []
+
     comment_listing = payload[1].get("data", {}).get("children", [])
-    return [
-        {
-            "id": comment.get("data", {}).get("id"),
-            "author": comment.get("data", {}).get("author"),
-            "body": comment.get("data", {}).get("body"),
-            "score": comment.get("data", {}).get("score"),
-            "created_utc": comment.get("data", {}).get("created_utc"),
-        }
-        for comment in comment_listing
-        if comment.get("kind") == "t1"
-    ]
+    comments: List[Dict[str, Any]] = []
+    for comment in comment_listing:
+        if comment.get("kind") != "t1":
+            continue
+        data = comment.get("data", {})
+        comments.append(
+            {
+                "id": data.get("id"),
+                "author": data.get("author"),
+                "body": data.get("body"),
+                "score": data.get("score"),
+                "created_utc": data.get("created_utc"),
+            }
+        )
+    return comments
 
 
 def fetch_subreddit_posts(
@@ -58,22 +61,39 @@ def fetch_subreddit_posts(
     skip_media: bool = False,
     comment_depth: int = 2,
     timeout: int = 10,
+    *,
+    client: Optional[RedditOAuthClient] = None,
 ) -> Dict[str, Any]:
+    """Fetch posts from a subreddit using the official OAuth API."""
+
+    oauth_client = client or RedditOAuthClient(timeout=timeout)
+
     posts: List[Dict[str, Any]] = []
     after: Optional[str] = None
 
     while len(posts) < limit:
-        url = _build_listing_url(subreddit, limit - len(posts), after)
-        response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=timeout)
-        response.raise_for_status()
-        data = response.json().get("data", {})
+        params: Dict[str, Any] = {"limit": min(100, limit - len(posts))}
+        if after:
+            params["after"] = after
+
+        listing = oauth_client.get(f"/r/{subreddit}/new", params=params, timeout=timeout)
+        data = listing.get("data", {}) if isinstance(listing, dict) else {}
         children = data.get("children", [])
+
+        if not children:
+            break
+
         for child in children:
             post_data = child.get("data", {})
             if skip_media and _has_media(post_data):
                 continue
 
-            comments = _fetch_comments(post_data.get("permalink", ""), depth=comment_depth, timeout=timeout)
+            comments = _fetch_comments(
+                oauth_client,
+                post_data.get("permalink", ""),
+                depth=comment_depth,
+                timeout=timeout,
+            )
 
             posts.append(
                 {
@@ -112,5 +132,5 @@ def fetch_subreddit_posts(
         "subreddit": subreddit,
         "scraped_at": dt.datetime.utcnow().isoformat(),
         "items": posts,
-        "source": "reddit_json",
+        "source": "reddit_api",
     }
