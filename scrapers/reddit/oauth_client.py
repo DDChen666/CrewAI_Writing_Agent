@@ -74,41 +74,57 @@ class RedditOAuthClient:
         json: Optional[Any] = None,
         timeout: Optional[int] = None,
     ) -> requests.Response:
-        token = self._ensure_token()
-        url = endpoint
-        if not endpoint.startswith("http"):
-            url = f"{self.API_BASE_URL}{endpoint}"
+        url = endpoint if endpoint.startswith("http") else f"{self.API_BASE_URL}{endpoint}"
+        max_attempts = 3
+        backoff_seconds = 1.0
+        refresh_attempted = False
+        last_exception: Optional[Exception] = None
+        response: Optional[requests.Response] = None
 
-        headers = {
-            "Authorization": f"bearer {token}",
-            "User-Agent": self.user_agent,
-        }
+        for attempt in range(max_attempts):
+            try:
+                token = self._ensure_token()
+                headers = {
+                    "Authorization": f"bearer {token}",
+                    "User-Agent": self.user_agent,
+                }
 
-        response = self._session.request(
-            method=method,
-            url=url,
-            headers=headers,
-            params=params,
-            data=data,
-            json=json,
-            timeout=timeout or self.timeout,
-        )
+                response = self._session.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    data=data,
+                    json=json,
+                    timeout=timeout or self.timeout,
+                )
 
-        if response.status_code == 401:
-            self._request_token()
-            headers["Authorization"] = f"bearer {self._ensure_token()}"
-            response = self._session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                data=data,
-                json=json,
-                timeout=timeout or self.timeout,
-            )
+                if response.status_code == 401 and not refresh_attempted:
+                    refresh_attempted = True
+                    self._request_token()
+                    continue
 
-        response.raise_for_status()
-        return response
+                if response.status_code in {429} or response.status_code >= 500:
+                    if attempt < max_attempts - 1:
+                        time.sleep(backoff_seconds)
+                        backoff_seconds *= 2
+                        continue
+
+                response.raise_for_status()
+                return response
+            except requests.RequestException as exc:  # pragma: no cover - network issues
+                last_exception = exc
+                if attempt < max_attempts - 1:
+                    time.sleep(backoff_seconds)
+                    backoff_seconds *= 2
+                    continue
+                raise
+
+        if response is not None:
+            response.raise_for_status()
+            return response
+        assert last_exception is not None
+        raise last_exception
 
     def request_json(
         self,
@@ -137,7 +153,9 @@ class RedditOAuthClient:
         params: Optional[Dict[str, Any]] = None,
         timeout: Optional[int] = None,
     ) -> Any:
-        return self.request_json("GET", endpoint, params=params, timeout=timeout)
+        final_params = dict(params or {})
+        final_params.setdefault("raw_json", 1)
+        return self.request_json("GET", endpoint, params=final_params, timeout=timeout)
 
     def post(
         self,

@@ -11,17 +11,23 @@ def build_reddit_scraping_task(agent) -> Task:
             "You receive a natural language request that describes what Reddit data "
             "should be fetched. The request to satisfy is: '{{user_request}}'. "
             "Decide which API endpoints or tools to call to fulfil the request. Always "
-            "prefer the structured subreddit scraper tool for listing style requests. "
-            "Use the generic API gateway only when the request requires actions beyond "
-            "listings (for example moderators, user profiles, search, or metadata). "
-            "Combine multiple calls if necessary. When calling a tool you MUST provide "
-            "a valid JSON dictionary (not a string) containing the required arguments."
+            "prefer the structured subreddit scraper tool for subreddit listings and "
+            "pass a JSON object containing: subreddit, limit, sort, time_filter (only "
+            "when sort='top'), comment_depth (0-10 or 'all' to fully expand), skip_media, "
+            "and timeout. Interpret 'best' as 'top' and default its time_filter to 'day'; "
+            "note this correction in the final request_summary. Requests targeting "
+            "profiles should call reddit_api_gateway twice: GET /user/<username>/about and "
+            "GET /user/<username>/submitted?limit=...&sort=.... "
+            "Use the generic API gateway for any non-listing Reddit Data API call. "
+            "Always provide tool arguments as JSON dictionaries, and you may chain "
+            "multiple tool calls to satisfy the request. When the user asks for 'all "
+            "comments', invoke the subreddit tool with comment_depth='all' so the "
+            "scraper expands every thread until no 'more' remain."
         ),
         expected_output=(
-            "Return a single JSON object. Include a 'request_summary' field describing "
-            "the interpreted ask, and a 'results' field containing either a single tool "
-            "response or an array of responses if multiple calls are made. Ensure the "
-            "JSON is valid and contains only data with no commentary."
+            "Deliver a brief request_summary (one or two sentences) that restates the "
+            "user's ask and notes the action taken. Do not emit JSON, raw tool data, "
+            "or any persisted results—Python handles storage separately."
         ),
         agent=agent,
         async_execution=False,

@@ -1,4 +1,8 @@
-"""Fallback scraper for Reddit using the PullPush API."""
+"""Fallback scraper for Reddit using the PullPush API.
+
+This path only provides subreddit listings ordered by ``created_utc`` descending
+and never includes comment threads or alternative sort orders.
+"""
 from __future__ import annotations
 
 import datetime as dt
@@ -78,6 +82,12 @@ class PullPushClient:
             "scraped_at": dt.datetime.utcnow().isoformat(),
             "items": posts,
             "source": "pullpush",
+            "parameters": {
+                "sort": "created_utc_desc",
+                "comments": "not_available",
+                "skip_media": skip_media,
+            },
+            "notes": "OAuth scraper unavailable; used PullPush fallback (no comments).",
         }
 
 
