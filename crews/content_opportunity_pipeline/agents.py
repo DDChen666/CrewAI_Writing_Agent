@@ -52,7 +52,7 @@ def build_trend_analysis_agent() -> Agent:
     """Create the Trend Analysis Agent responsible for clustering and momentum scoring."""
 
     llm = LLM(
-        model="gemini/gemini-2.0-flash-thinking",
+        model="gemini/gemini-2.5-flash",
         temperature=0.2,
     )
 
@@ -80,7 +80,7 @@ def build_brand_alignment_agent() -> Agent:
     """Create the Brand Alignment Agent responsible for scoring opportunities."""
 
     llm = LLM(
-        model="gemini/gemini-2.0-flash",
+        model="gemini/gemini-2.5-flash",
         temperature=0.15,
     )
 
@@ -108,7 +108,7 @@ def build_topic_curator_agent() -> Agent:
     """Create the Topic Curator Agent that packages final production briefs."""
 
     llm = LLM(
-        model="gemini/gemini-2.0-pro",
+        model="gemini/gemini-2.5-flash",
         temperature=0.35,
     )
 
