@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
 os.environ.setdefault("CREWAI_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 
@@ -20,6 +25,10 @@ from crews.reddit_scraper.tools import (
 
 
 CONFIG_PATH = Path(__file__).with_name("scraper.json")
+DEFAULT_PROMPTS = {
+    "1": Path(__file__).with_name("Default_Tasks1.YML"),
+}
+PROMPT_KEY = "prompt"
 
 
 def parse_args() -> argparse.Namespace:
@@ -36,7 +45,11 @@ def _load_config() -> Dict[str, Any]:
 
 
 def _ensure_output_path(root: Path, stem: str) -> Path:
-    now = dt.datetime.now(dt.UTC)
+    try:
+        tz = ZoneInfo("Asia/Taipei")
+    except Exception:
+        tz = dt.timezone(dt.timedelta(hours=8))
+    now = dt.datetime.now(tz)
     directory = root / now.strftime("%Y%m%d")
     directory.mkdir(parents=True, exist_ok=True)
     filename = f"{now.strftime('%Y%m%d%H%M')}_{stem}.json"
@@ -86,13 +99,66 @@ def _serialize_result(result: Any) -> str:
         return str(result)
 
 
+def _load_prompt_from_file(path: Path) -> str:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Unable to read prompt file: {path}") from exc
+
+    lines = content.splitlines()
+    prompt_lines = []
+    capture = False
+    indent = None
+
+    for line in lines:
+        stripped = line.strip()
+        if not capture:
+            if stripped.startswith(f"{PROMPT_KEY}:"):
+                suffix = stripped[len(PROMPT_KEY) + 1 :].strip()
+                if suffix and not suffix.startswith("|") and not suffix.startswith(">"):
+                    return suffix
+                capture = True
+                continue
+            continue
+
+        if indent is None:
+            if not line:
+                prompt_lines.append("")
+                continue
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 0:
+                break
+
+        if indent is not None and line.startswith(" " * indent):
+            prompt_lines.append(line[indent:])
+        elif not line and indent is not None:
+            prompt_lines.append("")
+        else:
+            break
+
+    if not prompt_lines:
+        raise RuntimeError(f"Prompt not found in {path}")
+
+    return "\n".join(prompt_lines).rstrip("\n")
+
+
+def _resolve_prompt(prompt_arg: str) -> str:
+    prompt_path = DEFAULT_PROMPTS.get(prompt_arg)
+    if prompt_path is None:
+        return prompt_arg
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Default prompt file not found: {prompt_path}")
+    return _load_prompt_from_file(prompt_path)
+
+
 def main() -> None:
     args = parse_args()
     config = _load_config()
     output_root = Path(config.get("output_root", "scraepr"))
     crew = RedditScraperCrew()
     reset_tool_execution_log()
-    result = crew.run(args.prompt)
+    prompt = _resolve_prompt(args.prompt)
+    result = crew.run(prompt)
     tool_outputs = get_tool_execution_log()
 
     errors = [entry for entry in tool_outputs if isinstance(entry["payload"], dict) and entry["payload"].get("status") == "error"]
