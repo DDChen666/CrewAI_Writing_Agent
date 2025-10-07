@@ -17,3 +17,6 @@ scraepr/
 content_pipeline_outputs/
 useful_research/
 *.log
+writing_agent_outputs/
+scraepr_outputs/
+data_catalog/
