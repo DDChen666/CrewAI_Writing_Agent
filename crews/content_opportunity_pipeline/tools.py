@@ -19,6 +19,11 @@ import requests
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field, RootModel, ValidationError
 
+from ..common import ensure_gemini_rate_limit
+
+
+ensure_gemini_rate_limit()
+
 # ---------------------------------------------------------------------------
 # Dataset registry utilities
 # ---------------------------------------------------------------------------
@@ -392,6 +397,22 @@ def _normalise_post(
 def _apply_condition(value: Any, *, operator: str, expected: Any) -> bool:
     """Evaluate a comparison condition."""
 
+    operator_str = operator if isinstance(operator, str) else str(operator or "")
+    normalised_operator = operator_str.lower()
+    alias_map = {
+        "gte": "ge",
+        "lte": "le",
+        "==": "eq",
+        "!=": "ne",
+        ">": "gt",
+        ">=": "ge",
+        "<": "lt",
+        "<=": "le",
+        "equals": "eq",
+        "not_equals": "ne",
+    }
+    operator = alias_map.get(normalised_operator, normalised_operator)
+
     if operator == "exists":
         return value is not None
     if operator == "missing":
@@ -541,6 +562,12 @@ class RedditDatasetExportArgs(BaseModel):
     include_statistics: bool = Field(
         True,
         description="Include aggregate statistics (score totals, averages, etc.) in the export payload.",
+    )
+    preview_limit: Optional[int] = Field(
+        10,
+        ge=1,
+        le=200,
+        description="Cap on how many items are embedded in the content_stream for context passing. Increase explicitly when a larger preview is required.",
     )
 
 
@@ -950,11 +977,44 @@ class RedditDatasetFilterTool(BaseTool):
 
         working_items = dataset.iter_summaries()
 
+        prepared_filters: Optional[List[FilterCondition]] = None
         if filters:
+            prepared_filters = []
+            for rule in filters:
+                if isinstance(rule, FilterCondition):
+                    prepared_filters.append(rule)
+                elif isinstance(rule, Mapping):
+                    try:
+                        prepared_filters.append(FilterCondition.model_validate(rule))
+                    except ValidationError as exc:
+                        logging.warning("Failed to parse filter condition %s: %s", rule, exc)
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "Invalid filter specification supplied to reddit_dataset_filter.",
+                                "tool": self.name,
+                            },
+                            ensure_ascii=False,
+                        )
+                else:
+                    logging.warning(
+                        "Unsupported filter type %s supplied to reddit_dataset_filter",
+                        type(rule).__name__,
+                    )
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "Invalid filter specification supplied to reddit_dataset_filter.",
+                            "tool": self.name,
+                        },
+                        ensure_ascii=False,
+                    )
+
+        if prepared_filters:
             filtered: List[Dict[str, Any]] = []
             for item in working_items:
                 include = True
-                for rule in filters:
+                for rule in prepared_filters:
                     candidate = _resolve_field(item, rule.field)
                     if not _apply_condition(candidate, operator=rule.operator, expected=rule.value):
                         include = False
@@ -986,13 +1046,13 @@ class RedditDatasetFilterTool(BaseTool):
             {
                 "filtered_from": dataset_id,
                 "total_items": len(working_items),
-                "applied_filters": [f.model_dump() for f in filters] if filters else None,
+                "applied_filters": [f.model_dump() for f in prepared_filters] if prepared_filters else None,
                 "sort_by": sort_by,
                 "descending": descending,
                 "limit": limit,
             }
         )
-        if not filters:
+        if not prepared_filters:
             new_metadata.pop("applied_filters", None)
 
         new_dataset_id = _DATASET_STORE.new_dataset_id()
@@ -1025,6 +1085,7 @@ class RedditDatasetExportTool(BaseTool):
         dataset_id: str,
         limit: Optional[int] = None,
         include_statistics: bool = True,
+        preview_limit: Optional[int] = 10,
     ) -> str:
         try:
             dataset = _DATASET_STORE.get(dataset_id)
@@ -1038,6 +1099,12 @@ class RedditDatasetExportTool(BaseTool):
         if limit is not None:
             items = items[:limit]
 
+        if preview_limit is not None:
+            preview_cap = max(1, min(preview_limit, len(items))) if items else 0
+            preview_items = items[:preview_cap]
+        else:
+            preview_items = items
+
         export_payload: Dict[str, Any] = {
             "status": "success",
             "tool": self.name,
@@ -1048,9 +1115,13 @@ class RedditDatasetExportTool(BaseTool):
                 "source_files": dataset.metadata.get("source_files", []),
                 "subreddits": dataset.metadata.get("subreddits", []),
                 "item_count": len(items),
-                "items": items,
+                "items_included": len(preview_items),
+                "items": preview_items,
             },
         }
+
+        if preview_limit is not None:
+            export_payload["content_stream"]["preview_limit"] = preview_limit
 
         if include_statistics:
             scores = [item.get("score") for item in items if isinstance(item.get("score"), (int, float))]

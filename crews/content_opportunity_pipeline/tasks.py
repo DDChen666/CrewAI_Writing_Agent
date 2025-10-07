@@ -21,7 +21,8 @@ def build_data_triage_task(agent) -> Task:
         ),
         expected_output=(
             "Return JSON describing the dataset you prepared, including dataset_id, source_files, subreddit coverage, "
-            "item_count, key filtering rules applied, and recommendations for the next stage."
+            "item_count, key filtering rules applied, and recommendations for the next stage. Keep the response compact: "
+            "summarise the dataset rather than embedding raw post arrays so downstream agents page data via lookup tools."
         ),
         agent=agent,
         async_execution=False,

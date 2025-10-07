@@ -4,7 +4,12 @@ from __future__ import annotations
 from crewai import Agent
 from crewai.llm import LLM
 
+from ..common import ensure_gemini_rate_limit
+
 from .tools import reddit_api_tool, reddit_subreddit_tool
+
+
+ensure_gemini_rate_limit()
 
 
 def build_reddit_scraper_agent() -> Agent:
