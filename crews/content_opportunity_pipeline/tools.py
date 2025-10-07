@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -116,6 +117,119 @@ class _DatasetStore:
             dataset_id = str(uuid.uuid4())
         return dataset_id
 
+    def _persist_dataset(self, dataset_id: str, stored: _StoredDataset) -> None:
+        db_path = _dataset_db_path(dataset_id, create=True)
+        connection = sqlite3.connect(db_path)
+        try:
+            with connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS dataset_metadata (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS summaries (sequence INTEGER PRIMARY KEY, pointer TEXT NOT NULL, payload TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS raw_items (pointer TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                connection.execute("DELETE FROM dataset_metadata")
+                connection.execute("DELETE FROM summaries")
+                connection.execute("DELETE FROM raw_items")
+                metadata_json = json.dumps(stored.metadata, ensure_ascii=False)
+                connection.execute(
+                    "INSERT INTO dataset_metadata (id, payload) VALUES (1, ?)",
+                    (metadata_json,),
+                )
+
+                written_raw: set[str] = set()
+
+                for index, pointer in enumerate(stored.pointer_sequence()):
+                    summary_payload = stored.summary_for_pointer(pointer) or {}
+                    summary_json = json.dumps(summary_payload, ensure_ascii=False)
+                    connection.execute(
+                        "INSERT INTO summaries (sequence, pointer, payload) VALUES (?, ?, ?)",
+                        (index, pointer, summary_json),
+                    )
+                    raw_payload = stored.raw_for_pointer(pointer)
+                    if raw_payload is not None:
+                        raw_json = json.dumps(raw_payload, ensure_ascii=False)
+                        connection.execute(
+                            "INSERT OR REPLACE INTO raw_items (pointer, payload) VALUES (?, ?)",
+                            (pointer, raw_json),
+                        )
+                        written_raw.add(pointer)
+
+                for pointer, raw_payload in stored.raw_items.items():
+                    if pointer in written_raw:
+                        continue
+                    try:
+                        raw_json = json.dumps(raw_payload, ensure_ascii=False)
+                    except TypeError:
+                        logging.warning(
+                            "Failed to serialise raw payload for pointer %s when persisting dataset %s",
+                            pointer,
+                            dataset_id,
+                        )
+                        continue
+                    connection.execute(
+                        "INSERT OR REPLACE INTO raw_items (pointer, payload) VALUES (?, ?)",
+                        (pointer, raw_json),
+                    )
+
+        finally:
+            connection.close()
+
+    def _load_dataset(self, dataset_id: str) -> _StoredDataset:
+        db_path = _dataset_db_path(dataset_id)
+        if not db_path.exists():
+            raise ValueError(f"Unknown dataset_id: {dataset_id}")
+
+        connection = sqlite3.connect(db_path)
+        try:
+            cursor = connection.execute(
+                "SELECT payload FROM dataset_metadata WHERE id = 1"
+            )
+            row = cursor.fetchone()
+            metadata: Dict[str, Any] = {}
+            if row and row[0]:
+                try:
+                    metadata = json.loads(row[0])
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            summaries: List[Dict[str, Any]] = []
+            cursor = connection.execute(
+                "SELECT pointer, payload FROM summaries ORDER BY sequence ASC"
+            )
+            for pointer, payload in cursor.fetchall():
+                try:
+                    summary_obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.warning("Failed to decode summary payload for pointer %s", pointer)
+                    continue
+                summaries.append(summary_obj)
+
+            raw_items: Dict[str, Dict[str, Any]] = {}
+            cursor = connection.execute("SELECT pointer, payload FROM raw_items")
+            for pointer, payload in cursor.fetchall():
+                try:
+                    raw_obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.warning("Failed to decode raw payload for pointer %s", pointer)
+                    continue
+                raw_items[pointer] = raw_obj
+
+        finally:
+            connection.close()
+
+        stored = _StoredDataset(
+            dataset_id=dataset_id,
+            summaries=summaries,
+            metadata=metadata,
+            raw_items=raw_items,
+        )
+        self._datasets[dataset_id] = stored
+        return stored
+
     def store(
         self,
         dataset_id: str,
@@ -130,16 +244,29 @@ class _DatasetStore:
             raw_items=raw_items,
         )
         self._datasets[dataset_id] = stored
+        try:
+            self._persist_dataset(dataset_id, stored)
+        except Exception as exc:  # pragma: no cover - filesystem guard
+            logging.warning("Failed to persist dataset %s: %s", dataset_id, exc)
         return dataset_id
 
     def get(self, dataset_id: str) -> _StoredDataset:
         try:
             return self._datasets[dataset_id]
-        except KeyError as exc:  # pragma: no cover - defensive guard
-            raise ValueError(f"Unknown dataset_id: {dataset_id}") from exc
+        except KeyError:
+            return self._load_dataset(dataset_id)
 
     def drop(self, dataset_id: str) -> None:
         self._datasets.pop(dataset_id, None)
+        db_path = _dataset_db_path(dataset_id)
+        if db_path.exists():
+            try:
+                db_path.unlink()
+                parent = db_path.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                logging.warning("Failed to remove dataset catalog for %s", dataset_id)
 
     def summary(self, dataset_id: str) -> Dict[str, Any]:
         dataset = self.get(dataset_id)
@@ -148,6 +275,17 @@ class _DatasetStore:
             "item_count": len(dataset.summaries),
             "metadata": dataset.metadata,
         }
+
+
+CATALOG_ROOT = Path(__file__).resolve().parents[2] / "data_catalog"
+
+
+def _dataset_db_path(dataset_id: str, *, create: bool = False) -> Path:
+    CATALOG_ROOT.mkdir(parents=True, exist_ok=True)
+    dataset_dir = CATALOG_ROOT / dataset_id
+    if create:
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+    return dataset_dir / "index.db"
 
 
 _DATASET_STORE = _DatasetStore()
@@ -587,7 +725,7 @@ def _apply_condition(value: Any, *, operator: str, expected: Any) -> bool:
 
 
 class RedditLocatorArgs(BaseModel):
-    base_dir: str = Field("scraepr", description="Root directory that contains scraped JSON files")
+    base_dir: str = Field("scraepr_outputs", description="Root directory that contains scraped JSON files")
     date_prefixes: Optional[List[str]] = Field(
         None,
         description="Specific date directories (YYYYMMDD) to consider. If omitted, search all dates.",
@@ -760,7 +898,7 @@ class RedditScrapeLocatorTool(BaseTool):
 
     def _run(  # type: ignore[override]
         self,
-        base_dir: str = "scraepr",
+        base_dir: str = "scraepr_outputs",
         date_prefixes: Optional[List[str]] = None,
         platform: Optional[str] = None,
         limit: int = 20,

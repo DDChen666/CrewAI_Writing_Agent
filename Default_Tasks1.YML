@@ -7,8 +7,9 @@ metadata:
     擷取 r/news 子版面中最新的三篇熱門貼文，輸出標題、作者、發文時間與連結，
     並將結果整理為 JSON。
 prompt: |
-  請協助我從 r/news 子版面中蒐集最新的三篇熱門貼文，
-  並輸出每篇貼文的標題、作者、發文時間與連結，
+  抓取 r/LocalLLaMA，r/OpenAI，r/GrowthHacking，r/PromptEngineering
+  sort by hot ，前200篇貼文
+  獲取每篇貼文的完整信息如內文/留言/圖片影片，留言深度2。
   最後將結果整理成 JSON 格式返回。
 ---
 agent: content_opportunity_pipeline
@@ -26,7 +27,7 @@ prompt: |
 
   ### 作業流程
   1. **Data Triage Agent（索引員）**：
-     - 以圖書管理員心態處理 operator 指令，使用 `reddit_scrape_locator`（例：`{"base_dir": "scraepr", "platform": "reddit"}`）盤點最新的 JSON 檔。
+     - 以圖書管理員心態處理 operator 指令，使用 `reddit_scrape_locator`（例：`{"base_dir": "scraepr_outputs", "platform": "reddit"}`）盤點最新的 JSON 檔。
      - 透過 `reddit_scrape_loader` 建立完整的內容湖索引，不要丟棄原始欄位，確保每篇貼文的 `raw_pointer` 可追溯。
      - 如需初步篩選，僅使用工具提供的 `filters` 參數，並於報告中記錄規則與資料覆蓋情況，輸出 Cleaned_Content_Stream 摘要與 `dataset_id`。
      - 剔除"score"<50的貼文和貼文附帶的數據，剔除"score"<20的留言和留言附帶的數據。
@@ -49,3 +50,167 @@ prompt: |
   ### 交付物
   - 以 `Prioritized_Topic_Brief` JSON 作為最終輸出，並在內容中保留 `dataset_id`、`cluster_id`、`representative_post_ids` 等追溯資訊。
   - 重要決策需附上數據或引用（如留言得分、KPI、媒體分析摘要），方便營運團隊延伸分析。
+
+---
+agent: writing_agent
+agent_version: 1
+task: writing_agent_default
+pipeline_output_root: content_pipeline_outputs
+pipeline_output_pattern: "*_content_opportunity_pipeline.json"
+default_rewrite_platform: facebook
+metadata:
+  label: justka_post_rewrite
+  description: >-
+    啟動 Writing Agent，載入最新的內容機會管線輸出，根據指定平台風格改寫成準備上線的貼文。
+prompt: |
+  你是 JustKa AI 的內容改寫專家，負責把 Content Opportunity Pipeline 的結論轉化為
+  指定平台的成品文案。請依照以下流程執行：
+
+  1. 解析指令：檢視 operator 的 rewrite 要求（若無則以 {{default_rewrite_platform}} 風格為預設）。
+  2. 熟悉背景：閱讀 `pipeline_context` 提供的趨勢報告、品牌機會與策展簡報，理解
+     選題理由、核心訊息與風險備註。
+  3. 追溯資料：如需引用 Reddit 原文，使用 `content_explorer` 搭配 `dataset_id` 抽取貼文與留言，
+     確認數據真實性與語意脈絡。
+  4. 取得風格指引：視需求呼叫 `facebook_writer`、`x_writer` 或 `thread_writer` 工具，理解平台
+     著重的語氣、結構、CTA 形式。
+  5. 完成立交付：產出符合 WritingAgentOutput schema 的 JSON，至少包含一個 rewrite 變體，
+     並列出支撐重點、引用連結與給編輯團隊的注意事項。
+
+  請主動列出假設與風險（例如資料時效、需二次審稿的敏感措辭），確保文本符合 JustKa AI
+  的品牌語調「更智慧、更省力、更美好」。
+
+---
+agent: reddit_scraper
+agent_version: 2
+task: "2"
+metadata:
+  label: quick_hot_pull
+  description: >-
+    熱門快抓，欄位齊全、JSON 整潔。
+prompt: |
+  抓 r/LocalLLaMA、r/OpenAI、r/GrowthHacking、r/PromptEngineering，sort=hot，前100。
+  取貼文完整欄位＋留言深度1，帶上圖片/影片 URL、permalink。
+  乾淨 JSON 返回，保留原始欄位（方便後續索引）。
+
+---
+agent: reddit_scraper
+agent_version: 3
+task: "3"
+metadata:
+  label: new_week_focus
+  description: >-
+    新貼聚焦，基本清洗，留言門檻高一點。
+prompt: |
+  抓同樣子版（LocalLLaMA、OpenAI、GrowthHacking、PromptEngineering），sort=new，限制近7天、最多200。
+  過濾刪文/成人內容，留言只取 score>10 的前50則。
+  請以 JSON 返回，包含 post_id、created_at、score、num_comments、top_comments（最多50）。
+
+---
+agent: reddit_scraper
+agent_version: 4
+task: "4"
+metadata:
+  label: keyword_targeted
+  description: >-
+    關鍵字定向抓取，少量精準。
+prompt: |
+  關鍵字過濾：例如「Moonshot」「GLM 4.6」「benchmark」。
+  sort=hot，最多100篇；輸出含 post_id、permalink、title、score、num_comments、body_preview、media_urls。
+  用 JSON 返回，保留必要原始欄位以利後續回溯。
+
+---
+agent: content_opportunity_pipeline
+agent_version: 2
+task: content_pipeline_v2
+brand_knowledge_base: Brand_Core_Knowledge_Base_for_justka.ai.yml
+metadata:
+  label: lightweight_opportunity
+  description: >-
+    輕量分析，按需取數，直接出可做的主題清單。
+prompt: |
+  我們要快、準、可落地。請：
+  - 用工具索引最新資料，不要整包讀；按需用 content_explorer 深挖。
+  - 依品牌知識庫做風險/契合度評分，輸出 Scored_And_Filtered_Opportunities。
+  - 挑 1-3 個主題，產生 Prioritized_Topic_Brief（含 dataset_id、代表 post_ids、角度、漏斗、引用）。
+  - 全程 JSON 格式輸出。
+
+---
+agent: content_opportunity_pipeline
+agent_version: 3
+task: content_pipeline_v3
+brand_knowledge_base: Brand_Core_Knowledge_Base_for_justka.ai.yml
+metadata:
+  label: fast_path_minimal
+  description: >-
+    極速模式：少即是多，只出最必要的 brief。
+prompt: |
+  走極速路線：
+  - 只評 3 個最明顯的趨勢分群，挑 1 個產出 brief。
+  - 每個決策要有引用（post_id/permalink），能回溯到 dataset_id。
+  - 僅輸出 Prioritized_Topic_Brief 的 JSON，不需要長文說明。
+
+---
+agent: content_opportunity_pipeline
+agent_version: 4
+task: content_pipeline_v4
+brand_knowledge_base: Brand_Core_Knowledge_Base_for_justka.ai.yml
+metadata:
+  label: cautious_data_backed
+  description: >-
+    保守穩健：避雷、講證據、可審核。
+prompt: |
+  保守模式：
+  - 迴避高度爭議與合規風險主題；必要時標註「待法務/品牌審」。
+  - 每個角度都要有數據或留言引用支撐，引用可回溯（dataset_id + post_id）。
+  - 輸出 Prioritized_Topic_Brief 的 JSON，附上風險備註與建議 KPI。
+
+---
+agent: writing_agent
+agent_version: 2
+task: writing_agent_v2
+pipeline_output_root: content_pipeline_outputs
+pipeline_output_pattern: "*_content_opportunity_pipeline.json"
+default_rewrite_platform: facebook
+metadata:
+  label: brief_first_rewriter
+  description: >-
+    先看 brief 再下筆，缺料就用 post_id 補。
+prompt: |
+  重點：只讀 `prioritized_topic_briefs` + `scored_and_filtered_opportunities`。
+  先挑 1 個 brief，從 reference_links 選 2-3 個 post_id，用 content_explorer(normalized)抓素材。
+  依 {{default_rewrite_platform}} 風格寫一版，附 CTA、supporting_points、references（用 permalink）。
+  用 WritingAgentOutput JSON 返回。
+
+---
+agent: writing_agent
+agent_version: 3
+task: writing_agent_v3
+pipeline_output_root: content_pipeline_outputs
+pipeline_output_pattern: "*_content_opportunity_pipeline.json"
+default_rewrite_platform: x
+metadata:
+  label: thread_plus_shortform
+  description: >-
+    先出 X 線程，再給 FB 短稿，一次兩版。
+prompt: |
+  選 1 個 brief：
+  - 從 reference_links 抽 2 個 post_id，用 content_explorer(normalized) 驗證與摘錄。
+  - 先寫 X 線程（開場1句＋3-5點），再寫 FB 版短稿（1段＋CTA）。
+  - 每版都附 references 與 editorial_notes。用 WritingAgentOutput JSON 返回。
+
+---
+agent: writing_agent
+agent_version: 4
+task: writing_agent_v4
+pipeline_output_root: content_pipeline_outputs
+pipeline_output_pattern: "*_content_opportunity_pipeline.json"
+default_rewrite_platform: thread
+metadata:
+  label: low_token_single
+  description: >-
+    低 token 單題單平台：穩、準、可追溯。
+prompt: |
+  低 Token 模式：只處理 1 個 brief、只輸出 1 個平台（{{default_rewrite_platform}}）。
+  不先塞大段上下文；需要引用才用 post_id + content_explorer(normalized) 抓原文。
+  產出正文＋CTA，附 supporting_points、references（permalink 或 post_id）、editorial_notes（含風險假設）。
+  嚴格用 WritingAgentOutput JSON 返回。

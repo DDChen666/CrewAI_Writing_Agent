@@ -54,7 +54,7 @@
 
 | Agent | 可能的錯誤情境 | 排查建議 |
 | --- | --- | --- |
-| Data Triage Agent | `reddit_scrape_locator` 指定的資料夾不存在時會回傳 `status: error`；或 `reddit_scrape_loader` 未提供任何檔案時會報 `file_paths cannot be empty`。 | 確認 `scraepr/` 目錄存在且內含 JSON，必要時更新 `content_pipeline_config.json` 或手動指派檔案。若需要，可在命令前先執行 `run_reddit_agent.py` 產生資料。 |【F:crews/content_opportunity_pipeline/tools.py†L155-L206】【F:crews/content_opportunity_pipeline/tools.py†L236-L269】|
+| Data Triage Agent | `reddit_scrape_locator` 指定的資料夾不存在時會回傳 `status: error`；或 `reddit_scrape_loader` 未提供任何檔案時會報 `file_paths cannot be empty`。 | 確認 `scraepr_outputs/` 目錄存在且內含 JSON，必要時更新 `content_pipeline_config.json` 或手動指派檔案。若需要，可在命令前先執行 `run_reddit_agent.py` 產生資料。 |【F:crews/content_opportunity_pipeline/tools.py†L155-L206】【F:crews/content_opportunity_pipeline/tools.py†L236-L269】|
 | Trend Analysis Agent | 使用 `reddit_dataset_lookup` 查詢未知的 `dataset_id` 時會回傳錯誤。 | 確認上一階段輸出的 `dataset_id` 是否帶入；如被清空，重新執行 Data Triage 取得有效 ID。 |【F:crews/content_opportunity_pipeline/tools.py†L461-L522】|
 | Brand Alignment Agent | 若 `dataset_id` 有誤或已被移除，`reddit_dataset_filter`/`reddit_dataset_lookup` 會報錯；同時若品牌知識庫路徑錯誤，腳本會直接終止。 | 透過腳本輸出訊息確認知識庫路徑，必要時使用 `--brand-knowledge-base` 指定；檢查上一階段輸出的 dataset 資訊。 |【F:crews/content_opportunity_pipeline/tools.py†L385-L459】【F:run_content_opportunity_pipeline.py†L64-L72】|
 | Topic Curator Agent | 依賴前一階段的 Scored Opportunities；若前一步驟失敗會導致無法產生 Brief。 | 先確保 Brand Alignment 階段成功執行並產出排序結果，再重新觸發流程。 |【F:crews/content_opportunity_pipeline/tasks.py†L47-L72】|
@@ -63,7 +63,7 @@
 
 ## 4. 與其他腳本的協作方式
 
-- `run_reddit_agent.py` 仍可用於快速產生新的 Reddit 原始資料，其預設任務定義同樣集中在 `Default_Tasks1.YML` 中，並會把工具輸出寫入 `scraepr/` 目錄以供 Data Triage Agent 使用。【F:run_reddit_agent.py†L19-L75】【F:run_reddit_agent.py†L90-L118】
+- `run_reddit_agent.py` 仍可用於快速產生新的 Reddit 原始資料，其預設任務定義同樣集中在 `Default_Tasks1.YML` 中，並會把工具輸出寫入 `scraepr_outputs/` 目錄以供 Data Triage Agent 使用。【F:run_reddit_agent.py†L19-L75】【F:run_reddit_agent.py†L90-L118】
 - 兩支腳本共用 `cli_common.py` 內的工具函式，包含預設提示解析、結果序列化與輸出寫檔邏輯，有助於維持一致的 CLI 體驗。【F:cli_common.py†L1-L153】【F:run_content_opportunity_pipeline.py†L13-L77】
 
 ## 5. 常見問題

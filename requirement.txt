@@ -3,3 +3,4 @@ facebook-scraper
 snscrape @ git+https://github.com/JustAnotherArchivist/snscrape@master
 crewai
 google-generativeai
+pydantic

@@ -190,7 +190,7 @@ def parse_args() -> argparse.Namespace:
 
 def run_smoke_tests(config: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("Running smoke tests for preset Facebook and Threads targets")
-    output_root = Path(config.get("output_root", "scraepr"))
+    output_root = Path(config.get("output_root", "scraepr_outputs"))
 
     summary: List[Dict[str, Any]] = []
     for scenario in TEST_SCENARIOS:
@@ -243,7 +243,7 @@ def run_smoke_tests(config: Dict[str, Any]) -> Dict[str, Any]:
 def main() -> None:
     args = parse_args()
     config = load_config()
-    output_root = Path(config.get("output_root", "scraepr"))
+    output_root = Path(config.get("output_root", "scraepr_outputs"))
 
     logging.basicConfig(level=logging.INFO)
 

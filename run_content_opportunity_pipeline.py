@@ -29,6 +29,21 @@ DEFAULT_PROMPTS = {
         "agent": "content_opportunity_pipeline",
         "task": "content_pipeline_default",
     },
+    "2": {
+        "path": Path(__file__).with_name("Default_Tasks1.YML"),
+        "agent": "content_opportunity_pipeline",
+        "task": "content_pipeline_v2",
+    },
+    "3": {
+        "path": Path(__file__).with_name("Default_Tasks1.YML"),
+        "agent": "content_opportunity_pipeline",
+        "task": "content_pipeline_v3",
+    },
+    "4": {
+        "path": Path(__file__).with_name("Default_Tasks1.YML"),
+        "agent": "content_opportunity_pipeline",
+        "task": "content_pipeline_v4",
+    },
 }
 
 

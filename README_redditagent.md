@@ -81,8 +81,8 @@ python run_reddit_agent.py "抓取 r/python sort by hot 的前兩篇，無需留
 實際欄位會依請求而異。若抓取使用者投稿，`target.type` 會變為 `user` 並填入 `user` 欄位；結構仍與子版面結果一致。列表抓取時會偏向使用 `reddit_subreddit_fetcher`，需要更彈性的端點呼叫時則可能使用 `reddit_api_gateway`。
 
 ## 輸出檔案位置
-- 成功取得的結構化 JSON（且 `status` ≠ `error`）會自動寫入 `scraper.json` 中 `output_root` 指定的位置（預設 `scraepr/`）。
-- 檔案命名規則與 CLI 爬蟲一致：`scraepr/YYYYMMDD/YYYYMMDDHHMM_reddit_agent.json`。
+- 成功取得的結構化 JSON（且 `status` ≠ `error`）會自動寫入 `scraper.json` 中 `output_root` 指定的位置（預設 `scraepr_outputs/`）。
+- 檔案命名規則與 CLI 爬蟲一致：`scraepr_outputs/YYYYMMDD/YYYYMMDDHHMM_reddit_agent.json`。
 - 終端仍會輸出同一份 JSON 內容，另在標準錯誤輸出顯示儲存路徑提醒。
 - 若回傳為純文字或錯誤 JSON，則不寫檔。
 
