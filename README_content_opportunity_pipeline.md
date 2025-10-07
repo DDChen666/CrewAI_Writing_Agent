@@ -43,6 +43,13 @@
 
 - **`Default_Tasks1.YML`**：同時保留 Reddit 擷取與內容機會兩種預設任務，第二段對應 `content_opportunity_pipeline`，內含品牌知識庫的相對路徑與多階段指示流程。【F:Default_Tasks1.YML†L1-L24】
 
+### 2.3 工具預設的採樣與預覽策略
+
+- `reddit_scrape_loader` 只會在 `preview` 與 `focus_view` 中提供精簡欄位（post_id、title、score、permalink、body_preview、raw_pointer 等），並附上 `preview_truncated` 與 `focus_view_truncated` 旗標，預設最多僅展示 5 筆預覽資料，若需要更多內容請改以 `reddit_dataset_lookup` 取得。【F:crews/content_opportunity_pipeline/tools.py†L924-L979】
+- `reddit_dataset_exporter` 的輸出改為 `content_stream.preview` 區塊，只保留必要欄位與彙總數據，同時標示 `truncated` 與 `limit`，避免在任務交接時塞入整批貼文資料。【F:crews/content_opportunity_pipeline/tools.py†L1061-L1103】
+- `reddit_dataset_lookup` 與 `content_explorer` 在未指定 `limit` 或 `post_ids` 時會自動限制為 20 筆，並透過 `truncated` 或 `selection_truncated` 提醒使用者後續是否需要再取樣更多貼文。【F:crews/content_opportunity_pipeline/tools.py†L1015-L1042】【F:crews/content_opportunity_pipeline/tools.py†L1120-L1186】
+- `content_explorer` 在 `data_level="full_comments"` 時會針對巢狀留言套用 100 筆的後代節點上限 (`descendant_cap`)，避免一次輸出過多留言樹；若觸發限制會在 `comment_summary.descendants_truncated` 顯示 true。【F:crews/content_opportunity_pipeline/tools.py†L1174-L1208】
+
 ## 3. Agents 可能觸發的錯誤與排查
 
 | Agent | 可能的錯誤情境 | 排查建議 |

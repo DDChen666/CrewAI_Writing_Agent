@@ -157,6 +157,10 @@ _DATASET_STORE = _DatasetStore()
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+DEFAULT_SAMPLE_LIMIT = 20
+DEFAULT_LOADER_PREVIEW_LIMIT = 5
+DEFAULT_COMMENT_DESCENDANT_LIMIT = 100
+
 
 _DEFAULT_FIELD_MAPPING: Dict[str, Tuple[str, Optional[str]]] = {
     "post_id": ("id", None),
@@ -195,6 +199,47 @@ def _truncate_text(text: Optional[str], length: int = 240) -> Optional[str]:
     if len(cleaned) <= length:
         return cleaned
     return cleaned[: length - 3].rstrip() + "..."
+
+
+def _summary_to_preview(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a lightweight preview payload from a post summary."""
+
+    preview: Dict[str, Any] = {
+        "dataset_id": summary.get("dataset_id"),
+        "post_id": summary.get("post_id"),
+        "title": summary.get("title"),
+        "permalink": summary.get("permalink"),
+        "score": summary.get("score"),
+        "num_comments": summary.get("num_comments"),
+        "body_preview": summary.get("body_preview"),
+        "raw_pointer": summary.get("raw_pointer"),
+    }
+    top_level_comment_count = summary.get("top_level_comment_count")
+    if top_level_comment_count is not None:
+        preview["top_level_comment_count"] = top_level_comment_count
+    subreddit = summary.get("subreddit")
+    if subreddit is not None:
+        preview["subreddit"] = subreddit
+    created_at_iso = summary.get("created_at_iso")
+    if created_at_iso is not None:
+        preview["created_at_iso"] = created_at_iso
+    return {key: value for key, value in preview.items() if value is not None}
+
+
+def _build_preview_items(
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    limit: Optional[int],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    ordered = list(summaries)
+    if limit is None:
+        selected = ordered
+    else:
+        effective_limit = max(0, limit)
+        selected = ordered[:effective_limit]
+    preview_items = [_summary_to_preview(summary) for summary in selected]
+    truncated = len(ordered) > len(preview_items)
+    return preview_items, truncated
 
 
 def _build_post_summary(
@@ -323,6 +368,62 @@ def _sort_and_limit_comments(
     if limit is not None:
         return comments[:limit]
     return comments
+
+
+def _enforce_comment_cap(
+    comments: Sequence[Dict[str, Any]],
+    *,
+    max_descendants: Optional[int],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Trim nested comment trees to respect a descendant cap."""
+
+    if max_descendants is None or max_descendants <= 0:
+        return [copy.deepcopy(comment) for comment in comments], False
+
+    remaining = max_descendants
+    truncated = False
+
+    def clone_comment(comment: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        nonlocal remaining, truncated
+        if remaining <= 0:
+            truncated = True
+            return None
+        remaining -= 1
+        base: Dict[str, Any] = {
+            key: copy.deepcopy(value)
+            for key, value in comment.items()
+            if key != "replies"
+        }
+        replies: List[Dict[str, Any]] = []
+        raw_replies = comment.get("replies")
+        if isinstance(raw_replies, list):
+            for child in raw_replies:
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if isinstance(child, Mapping):
+                    cloned = clone_comment(child)
+                    if cloned is None:
+                        break
+                    replies.append(cloned)
+        base["replies"] = replies
+        base["replies_count"] = len(replies)
+        return base
+
+    capped: List[Dict[str, Any]] = []
+    for comment in comments:
+        if remaining <= 0:
+            truncated = True
+            break
+        cloned_comment = clone_comment(comment)
+        if cloned_comment is None:
+            break
+        capped.append(cloned_comment)
+
+    if len(capped) < len(comments):
+        truncated = True
+
+    return capped, truncated
 
 
 def _retrieve_comment_tree(
@@ -567,7 +668,7 @@ class RedditDatasetExportArgs(BaseModel):
         10,
         ge=1,
         le=200,
-        description="Cap on how many items are embedded in the content_stream for context passing. Increase explicitly when a larger preview is required.",
+        description="Cap on how many items are embedded inside content_stream.preview.items. Increase explicitly or set to null when a larger preview is required.",
     )
 
 
@@ -581,7 +682,7 @@ class RedditDatasetLookupArgs(BaseModel):
         None,
         ge=1,
         le=500,
-        description="Maximum number of posts to return when post_ids is not supplied.",
+        description="Maximum number of posts to return when post_ids is not supplied. Defaults to 20 when omitted.",
     )
     include_metadata: bool = Field(False, description="Whether to include dataset metadata in the response")
 
@@ -596,7 +697,7 @@ class ContentExplorerArgs(BaseModel):
         None,
         ge=1,
         le=500,
-        description="Maximum number of items to return when post_ids is not supplied.",
+        description="Maximum number of items to return when post_ids is not supplied. Defaults to 20 when omitted.",
     )
     data_level: Literal["summary", "normalized", "full_comments", "raw"] = Field(
         "summary",
@@ -931,14 +1032,32 @@ class RedditScrapeLoaderTool(BaseTool):
 
         _DATASET_STORE.store(dataset_id, summaries, dataset_metadata, raw_items)
 
-        preview_items = summaries[: min(len(summaries), 5)]
+        preview_items, preview_truncated = _build_preview_items(
+            summaries,
+            limit=DEFAULT_LOADER_PREVIEW_LIMIT,
+        )
 
         focus_view: Optional[List[Dict[str, Any]]] = None
+        focus_view_truncated = False
+        focus_view_total_matches: Optional[int] = None
+        focus_view_limit: Optional[int] = None
+        focus_filters_dump: Optional[List[Dict[str, Any]]] = None
         if prepared_filters or max_items is not None:
-            filtered_candidates = [summary for summary in summaries if self._filter_item(summary, prepared_filters)]
-            if max_items is not None:
-                filtered_candidates = filtered_candidates[:max_items]
-            focus_view = filtered_candidates
+            filtered_candidates = [
+                summary for summary in summaries if self._filter_item(summary, prepared_filters)
+            ]
+            focus_view_total_matches = len(filtered_candidates)
+            focus_filters_dump = (
+                [rule.model_dump() for rule in prepared_filters] if prepared_filters else None
+            )
+            applied_limit: Optional[int] = max_items
+            if applied_limit is None and len(filtered_candidates) > DEFAULT_SAMPLE_LIMIT:
+                applied_limit = DEFAULT_SAMPLE_LIMIT
+            if applied_limit is not None:
+                focus_view_limit = applied_limit
+                filtered_candidates = filtered_candidates[:applied_limit]
+                focus_view_truncated = focus_view_total_matches > len(filtered_candidates)
+            focus_view = [_summary_to_preview(summary) for summary in filtered_candidates]
 
         payload: Dict[str, Any] = {
             "status": "success",
@@ -948,8 +1067,18 @@ class RedditScrapeLoaderTool(BaseTool):
             "preview": preview_items,
             "metadata": dataset_metadata,
         }
+        payload["preview_limit"] = DEFAULT_LOADER_PREVIEW_LIMIT
+        payload["preview_truncated"] = preview_truncated
         if focus_view is not None:
             payload["focus_view"] = focus_view
+            payload["focus_view_truncated"] = focus_view_truncated
+            payload["focus_view_count"] = len(focus_view)
+            if focus_view_total_matches is not None:
+                payload["focus_view_total_matches"] = focus_view_total_matches
+            if focus_view_limit is not None:
+                payload["focus_view_limit"] = focus_view_limit
+            if focus_filters_dump:
+                payload["focus_view_filters"] = focus_filters_dump
 
         return json.dumps(payload, ensure_ascii=False)
 
@@ -1099,11 +1228,10 @@ class RedditDatasetExportTool(BaseTool):
         if limit is not None:
             items = items[:limit]
 
-        if preview_limit is not None:
-            preview_cap = max(1, min(preview_limit, len(items))) if items else 0
-            preview_items = items[:preview_cap]
-        else:
-            preview_items = items
+        preview_items, preview_truncated = _build_preview_items(
+            items,
+            limit=preview_limit,
+        )
 
         export_payload: Dict[str, Any] = {
             "status": "success",
@@ -1115,13 +1243,18 @@ class RedditDatasetExportTool(BaseTool):
                 "source_files": dataset.metadata.get("source_files", []),
                 "subreddits": dataset.metadata.get("subreddits", []),
                 "item_count": len(items),
-                "items_included": len(preview_items),
-                "items": preview_items,
+                "preview": {
+                    "limit": preview_limit,
+                    "included": len(preview_items),
+                    "total_available": len(items),
+                    "truncated": preview_truncated,
+                    "items": preview_items,
+                },
             },
         }
 
-        if preview_limit is not None:
-            export_payload["content_stream"]["preview_limit"] = preview_limit
+        if limit is not None:
+            export_payload["content_stream"]["source_limit"] = limit
 
         if include_statistics:
             scores = [item.get("score") for item in items if isinstance(item.get("score"), (int, float))]
@@ -1169,13 +1302,24 @@ class RedditDatasetLookupTool(BaseTool):
                 ensure_ascii=False,
             )
 
-        working_items = dataset.iter_summaries()
+        all_items = dataset.iter_summaries()
+        total_available = len(all_items)
+        working_items = all_items
+        applied_limit: Optional[int] = None
+        truncated = False
 
         if post_ids:
             requested = {pid for pid in post_ids}
             working_items = [item for item in working_items if str(item.get("post_id")) in requested]
-        elif limit is not None:
-            working_items = working_items[:limit]
+        else:
+            if limit is None:
+                if total_available:
+                    applied_limit = min(DEFAULT_SAMPLE_LIMIT, total_available)
+            else:
+                applied_limit = min(limit, total_available)
+            if applied_limit is not None:
+                truncated = total_available > applied_limit
+                working_items = working_items[:applied_limit]
 
         payload: Dict[str, Any] = {
             "status": "success",
@@ -1184,6 +1328,10 @@ class RedditDatasetLookupTool(BaseTool):
             "item_count": len(working_items),
             "items": working_items,
         }
+        if applied_limit is not None:
+            payload["applied_limit"] = applied_limit
+        payload["total_available"] = total_available
+        payload["truncated"] = truncated
         if include_metadata:
             payload["metadata"] = dataset.metadata
 
@@ -1203,18 +1351,39 @@ class ContentExplorerTool(BaseTool):
         dataset: _StoredDataset,
         post_ids: Optional[Sequence[str]],
         limit: Optional[int],
-    ) -> List[str]:
+    ) -> Tuple[List[str], bool, Optional[int]]:
         if post_ids:
             ordered: List[str] = []
             for post_id in post_ids:
                 pointer = dataset.lookup_pointer(post_id)
                 if pointer:
                     ordered.append(pointer)
-            return ordered
+            return ordered, False, None
+
         pointers = dataset.pointer_sequence()
+        pointer_count = len(pointers)
+        if pointer_count == 0:
+            return [], False, None
+
+        truncated = False
+        applied_limit: Optional[int]
         if limit is not None:
-            return pointers[:limit]
-        return pointers
+            applied_limit = min(limit, pointer_count)
+            truncated = pointer_count > applied_limit
+        else:
+            if pointer_count > DEFAULT_SAMPLE_LIMIT:
+                applied_limit = DEFAULT_SAMPLE_LIMIT
+                truncated = True
+            else:
+                applied_limit = pointer_count
+
+        selected = pointers[:applied_limit]
+        reported_limit: Optional[int]
+        if limit is not None or truncated:
+            reported_limit = applied_limit
+        else:
+            reported_limit = None
+        return selected, truncated, reported_limit
 
     def _run(  # type: ignore[override]
         self,
@@ -1236,7 +1405,7 @@ class ContentExplorerTool(BaseTool):
                 ensure_ascii=False,
             )
 
-        pointers = self._select_pointers(dataset, post_ids, limit)
+        pointers, pointers_truncated, applied_limit = self._select_pointers(dataset, post_ids, limit)
         extra_fields_tuple: Tuple[str, ...] = tuple(sorted(extra_fields or []))
 
         items: List[Dict[str, Any]]
@@ -1283,16 +1452,22 @@ class ContentExplorerTool(BaseTool):
                         sort_by=comment_sort_by,
                         limit=comment_limit,
                     )
-                    base_payload["comments"] = filtered_comments
+                    capped_comments, comments_truncated = _enforce_comment_cap(
+                        filtered_comments,
+                        max_descendants=DEFAULT_COMMENT_DESCENDANT_LIMIT,
+                    )
+                    base_payload["comments"] = capped_comments
                     total_count = 0
-                    for comment in filtered_comments:
+                    for comment in capped_comments:
                         total_count += 1 + _count_comment_tree(comment.get("replies"))
                     base_payload["comment_summary"] = {
-                        "top_level_count": len(filtered_comments),
+                        "top_level_count": len(capped_comments),
                         "total_count": total_count,
                         "filters_applied": [f.model_dump() for f in comment_filters] if comment_filters else None,
                         "sort_by": comment_sort_by,
                         "limit": comment_limit,
+                        "descendant_cap": DEFAULT_COMMENT_DESCENDANT_LIMIT,
+                        "descendants_truncated": comments_truncated,
                     }
                 items.append(base_payload)
 
@@ -1305,6 +1480,9 @@ class ContentExplorerTool(BaseTool):
             "items": items,
             "selected_post_ids": selected_post_ids,
         }
+        if applied_limit is not None:
+            payload["applied_limit"] = applied_limit
+        payload["selection_truncated"] = pointers_truncated
 
         if data_level == "full_comments":
             payload["comment_request"] = {
