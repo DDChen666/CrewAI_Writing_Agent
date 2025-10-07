@@ -1,7 +1,7 @@
 # Reddit Agent 使用指南
 
 本文件說明如何以自然語言驅動的方式，透過 CrewAI 代理整合 Reddit 官方 Data API 來擷取資料。代理的入口點為 `run_reddit_agent.py`，其會根據你的中文或英文指令，自動決定呼叫下列工具並回傳結構化 JSON：
-- `reddit_subreddit_fetcher`：抓取子版面貼文與留言（偏列表型需求）
+- `reddit_subreddit_fetcher`：抓取子版面貼文、留言，或特定使用者的投稿列表（偏列表型需求）
 - `reddit_api_gateway`：任意 Reddit Data API 端點（當需求超出列表抓取時）
 
 ## 先決條件
@@ -50,6 +50,7 @@ python run_reddit_agent.py "抓取 r/python sort by hot 的前兩篇，無需留
 - 「抓取 r/news 最新 10 則貼文，輸出標題、連結與分數」
 - 「用 Reddit API 查詢 r/learnpython 的熱門貼文（本週），包含 upvote_ratio」
 - 「找出 r/dataisbeautiful 最近 20 則且含圖片的貼文」
+- 「整理 u/MetaKnowing 最新 5 則投稿，附上前兩層留言」
 
 ## 回傳格式（範例節錄）
 工具任務的預期輸出為單一 JSON 物件，含解讀摘要與結果：
@@ -58,15 +59,26 @@ python run_reddit_agent.py "抓取 r/python sort by hot 的前兩篇，無需留
   "request_summary": "抓取 r/Python 最新 30 則貼文並略過含媒體，附上前 2 層留言",
   "results": {
     "platform": "reddit",
+    "target": {
+      "type": "subreddit",
+      "name": "Python",
+      "display_name": "r/Python"
+    },
     "subreddit": "Python",
+    "user": null,
     "items": [
       {"id": "abc123", "title": "...", "comments": [...], "statistics": {"score": 123, "num_comments": 4}}
-    ]
+    ],
+    "parameters": {
+      "limit": 30,
+      "sort": "new",
+      "comment_depth": 2
+    }
   }
 }
 ```
 
-實際欄位會依請求而異。列表抓取時會偏向使用 `reddit_subreddit_fetcher`，需要更彈性的端點呼叫時則可能使用 `reddit_api_gateway`。
+實際欄位會依請求而異。若抓取使用者投稿，`target.type` 會變為 `user` 並填入 `user` 欄位；結構仍與子版面結果一致。列表抓取時會偏向使用 `reddit_subreddit_fetcher`，需要更彈性的端點呼叫時則可能使用 `reddit_api_gateway`。
 
 ## 輸出檔案位置
 - 成功取得的結構化 JSON（且 `status` ≠ `error`）會自動寫入 `scraper.json` 中 `output_root` 指定的位置（預設 `scraepr/`）。
@@ -82,7 +94,7 @@ python run_reddit_agent.py "抓取 r/python sort by hot 的前兩篇，無需留
 - 工具參數格式：代理呼叫工具時需提供有效 JSON 參數（程式已內建約束與驗證）。
 
 ## 進階說明（工具）
-- `reddit_subreddit_fetcher` 參數：`subreddit`、`limit`、`skip_media`、`comment_depth`、`timeout`
+- `reddit_subreddit_fetcher` 參數：`subreddit`（可輸入 `python`、`r/python` 或 `u/spez` 等）、`limit`、`sort`、`time_filter`（僅配 `top/best`）、`skip_media`、`comment_depth`、`timeout`
 - `reddit_api_gateway` 參數：`endpoint`、`method`、`params`、`data`、`json`、`timeout`
 
 一般使用者僅需以自然語言輸入需求；若你熟悉 Reddit API，可在指令中更精確描述要呼叫的端點與參數，代理會盡量遵循並產生結構化結果。
