@@ -267,4 +267,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # pragma: no cover - runtime guard
+        print(f"Failed to execute Content Opportunity Pipeline: {exc}", file=sys.stderr)
+        sys.exit(1)
