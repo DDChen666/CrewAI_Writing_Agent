@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 os.environ.setdefault("CREWAI_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
-os.environ.setdefault("CONTENT_PIPELINE_FORCE_OFFLINE", "1")
+os.environ.setdefault("CONTENT_PIPELINE_FORCE_OFFLINE", "0")
 
 from cli_common import (
     load_config,
