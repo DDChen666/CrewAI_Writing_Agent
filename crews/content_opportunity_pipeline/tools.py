@@ -17,7 +17,7 @@ from typing import Literal
 
 import requests
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, ValidationError
 
 # ---------------------------------------------------------------------------
 # Dataset registry utilities
@@ -764,6 +764,38 @@ class RedditScrapeLoaderTool(BaseTool):
 
         dataset_id = _DATASET_STORE.new_dataset_id()
         extra_fields: Sequence[str] = list(select_fields or [])
+        prepared_filters: Optional[List[FilterCondition]] = None
+        if filters:
+            prepared_filters = []
+            for rule in filters:
+                if isinstance(rule, FilterCondition):
+                    prepared_filters.append(rule)
+                elif isinstance(rule, Mapping):
+                    try:
+                        prepared_filters.append(FilterCondition(**rule))
+                    except ValidationError as exc:
+                        logging.warning("Failed to parse filter condition %s: %s", rule, exc)
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "Invalid filter specification supplied to reddit_scrape_loader.",
+                                "tool": self.name,
+                            },
+                            ensure_ascii=False,
+                        )
+                else:
+                    logging.warning(
+                        "Unsupported filter type %s supplied to reddit_scrape_loader",
+                        type(rule).__name__,
+                    )
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "Invalid filter specification supplied to reddit_scrape_loader.",
+                            "tool": self.name,
+                        },
+                        ensure_ascii=False,
+                    )
         summaries: List[Dict[str, Any]] = []
         raw_items: Dict[str, Dict[str, Any]] = {}
         source_files: List[str] = []
@@ -875,8 +907,8 @@ class RedditScrapeLoaderTool(BaseTool):
         preview_items = summaries[: min(len(summaries), 5)]
 
         focus_view: Optional[List[Dict[str, Any]]] = None
-        if filters or max_items is not None:
-            filtered_candidates = [summary for summary in summaries if self._filter_item(summary, filters)]
+        if prepared_filters or max_items is not None:
+            filtered_candidates = [summary for summary in summaries if self._filter_item(summary, prepared_filters)]
             if max_items is not None:
                 filtered_candidates = filtered_candidates[:max_items]
             focus_view = filtered_candidates

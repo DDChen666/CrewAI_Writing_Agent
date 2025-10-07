@@ -29,6 +29,7 @@ prompt: |
      - 以圖書管理員心態處理 operator 指令，使用 `reddit_scrape_locator`（例：`{"base_dir": "scraepr", "platform": "reddit"}`）盤點最新的 JSON 檔。
      - 透過 `reddit_scrape_loader` 建立完整的內容湖索引，不要丟棄原始欄位，確保每篇貼文的 `raw_pointer` 可追溯。
      - 如需初步篩選，僅使用工具提供的 `filters` 參數，並於報告中記錄規則與資料覆蓋情況，輸出 Cleaned_Content_Stream 摘要與 `dataset_id`。
+     - 剔除"score"<50的貼文和貼文附帶的數據，剔除"score"<20的留言和留言附帶的數據。
   2. **Trend Analysis Agent（趨勢研究員）**：
      - 讀取 triage 報告後，使用 `content_explorer_tool` 按需檢視貼文摘要、完整留言或原始 JSON。
      - 完成語意分群，計算動能、加速度、情緒與 KOL，產出 `Identified_Trends_Report`。
