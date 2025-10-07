@@ -22,7 +22,7 @@ metadata:
     產出符合 JustKa AI 品牌定位的內容機會與優先製作清單。
 prompt: |
   請扮演 JustKa AI 的內容機會評估小組。遵循以下流程：
-    1. 使用 Data Triage Agent 讀取 operator 的需求並定位最新的 Reddit 資料，
+    1. 使用 Data Triage Agent 讀取 operator 的需求並定位目錄20251007內的 Reddit 資料，
        只透過提供的工具完成篩選、去重與輸出 Cleaned_Content_Stream。
     2. 交給 Trend Analysis Agent 進行語意分群，計算動能、加速度與情緒標籤，
        並建立 Identified_Trends_Report。

@@ -15,4 +15,5 @@ Thumbs.db
 # Project outputs
 scraepr/
 content_pipeline_outputs/
+useful_research/
 *.log

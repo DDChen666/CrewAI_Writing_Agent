@@ -69,11 +69,14 @@ def _record_tool_error(tool_name: str, message: str, *, metadata: Optional[Dict[
 
 
 class SubredditToolArgs(BaseModel):
-    subreddit: str = Field(..., description="Subreddit name or identifier")
+    subreddit: str = Field(
+        ...,
+        description="Target subreddit or user (e.g. 'python', 'r/python', 'u/spez')",
+    )
     limit: int = Field(50, description="Number of posts to fetch", ge=1, le=500)
     sort: Literal["hot", "new", "top", "rising", "controversial", "best"] = Field(
         "new",
-        description="Sort order for subreddit listings",
+        description="Sort order for listings (applies to subreddits and user submissions)",
     )
     time_filter: Optional[Literal["hour", "day", "week", "month", "year", "all"]] = Field(
         None,
@@ -114,7 +117,7 @@ class RedditSubredditTool(BaseTool):
     name: str = "reddit_subreddit_fetcher"
     description: str = (
         "Use this tool to fetch structured submissions and comments from a subreddit "
-        "via the official Reddit Data API."
+        "or a Reddit user's submitted posts via the official Reddit Data API."
     )
     args_schema: Type[BaseModel] = SubredditToolArgs
 
@@ -132,10 +135,10 @@ class RedditSubredditTool(BaseTool):
         normalized_sort = "top" if sort == "best" else sort
         effective_time_filter = time_filter
         metadata: Dict[str, Any] = {
-            "subreddit": subreddit,
+            "identifier": subreddit,
             "limit": limit,
             "sort_requested": requested_sort,
-            "sort_used": normalized_sort,
+            "sort_normalized": normalized_sort,
             "comment_depth": comment_depth,
             "skip_media": skip_media,
             "timeout": timeout,
@@ -162,6 +165,21 @@ class RedditSubredditTool(BaseTool):
             )
         except Exception as exc:  # pragma: no cover - network failure path
             return _record_tool_error(self.name, str(exc), metadata=metadata)
+
+        if isinstance(payload, dict):
+            target_info = payload.get("target", {})
+            if isinstance(target_info, dict):
+                metadata["target_type"] = target_info.get("type")
+                metadata["target_name"] = target_info.get("name")
+                metadata["target_display"] = target_info.get("display_name")
+            parameters = payload.get("parameters", {})
+            if isinstance(parameters, dict):
+                if "sort" in parameters:
+                    metadata["sort_used"] = parameters.get("sort")
+                if "identifier_normalized" in parameters:
+                    metadata["identifier_normalized"] = parameters.get("identifier_normalized")
+                if "target_type" in parameters and "target_type" not in metadata:
+                    metadata["target_type"] = parameters.get("target_type")
 
         return _record_tool_success(self.name, payload, metadata=metadata)
 

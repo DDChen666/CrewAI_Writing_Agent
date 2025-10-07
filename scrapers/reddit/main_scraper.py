@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from urllib.parse import urlparse
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple, Union
 
 from .oauth_client import RedditOAuthClient
@@ -21,16 +22,72 @@ def _has_media(post_data: Dict[str, Any]) -> bool:
     return False
 
 
-def _resolve_listing_path(subreddit: str, sort: str) -> str:
+def _resolve_listing_path(
+    subreddit: str, sort: str
+) -> Tuple[str, Literal["subreddit", "user"], str, str, str]:
+    """Return the API path and metadata for subreddit or user listings.
+
+    The input may be provided as a bare subreddit name ("python"), a prefixed
+    identifier ("r/python", "u/spez"), or a Reddit URL. The function normalizes
+    the identifier, decides whether it targets a subreddit or user submissions,
+    and returns the appropriate API endpoint along with normalized metadata.
+    """
+
     listing_paths = {
         "hot": "hot",
         "new": "new",
         "top": "top",
         "rising": "rising",
         "controversial": "controversial",
-        "best": "top",
     }
-    return f"/r/{subreddit}/{listing_paths.get(sort, 'new')}"
+
+    identifier = (subreddit or "").strip()
+    if not identifier:
+        raise ValueError("A subreddit or user identifier is required.")
+
+    if identifier.startswith(("http://", "https://")):
+        parsed = urlparse(identifier)
+        identifier = parsed.path or ""
+    elif identifier.startswith("reddit.com") or identifier.startswith("www.reddit.com"):
+        _, _, remainder = identifier.partition("reddit.com")
+        identifier = remainder
+
+    identifier = identifier.strip().strip("/")
+    if not identifier:
+        raise ValueError("Identifier is empty after normalization.")
+
+    segments = [segment for segment in identifier.split("/") if segment]
+    if not segments:
+        raise ValueError("Identifier is malformed.")
+
+    first_segment = segments[0].lower()
+    if first_segment in {"u", "user"}:
+        if len(segments) < 2 or not segments[1].strip():
+            raise ValueError("User identifier is missing a username.")
+        target_type: Literal["subreddit", "user"] = "user"
+        target_name = segments[1].strip()
+    elif first_segment == "r":
+        if len(segments) < 2 or not segments[1].strip():
+            raise ValueError("Subreddit identifier is missing a name.")
+        target_type = "subreddit"
+        target_name = segments[1].strip()
+    else:
+        target_type = "subreddit"
+        target_name = segments[0].strip()
+
+    if not target_name:
+        raise ValueError("Resolved target name cannot be empty.")
+
+    display_prefix = "u" if target_type == "user" else "r"
+    display_name = f"{display_prefix}/{target_name}"
+
+    resolved_sort = listing_paths.get(sort, "new")
+    if target_type == "subreddit":
+        endpoint = f"/r/{target_name}/{resolved_sort}"
+    else:
+        endpoint = f"/user/{target_name}/submitted"
+
+    return endpoint, target_type, target_name, display_name, resolved_sort
 
 
 def _collect_comment_nodes(
@@ -202,22 +259,27 @@ def fetch_subreddit_posts(
     time_filter: Optional[str] = None,
     client: Optional[RedditOAuthClient] = None,
 ) -> Dict[str, Any]:
-    """Fetch posts from a subreddit using the official OAuth API."""
+    """Fetch posts from a subreddit or user using the official OAuth API."""
 
     oauth_client = client or RedditOAuthClient(timeout=timeout)
 
     posts: List[Dict[str, Any]] = []
     after: Optional[str] = None
 
+    requested_sort = sort
     normalized_sort = "top" if sort == "best" else sort
-    listing_endpoint = _resolve_listing_path(subreddit, normalized_sort)
+    listing_endpoint, target_type, target_name, target_display, resolved_sort = _resolve_listing_path(
+        subreddit, normalized_sort
+    )
 
     while len(posts) < limit:
         params: Dict[str, Any] = {
             "limit": min(100, limit - len(posts)),
             "raw_json": 1,
         }
-        if normalized_sort == "top" and time_filter:
+        if target_type == "user":
+            params["sort"] = resolved_sort
+        if resolved_sort == "top" and time_filter:
             params["t"] = time_filter
         if after:
             params["after"] = after
@@ -275,15 +337,26 @@ def fetch_subreddit_posts(
 
     return {
         "platform": "reddit",
-        "subreddit": subreddit,
+        "subreddit": target_name if target_type == "subreddit" else None,
+        "user": target_name if target_type == "user" else None,
+        "target": {
+            "type": target_type,
+            "name": target_name,
+            "display_name": target_display,
+            "input": subreddit,
+        },
         "scraped_at": dt.datetime.utcnow().isoformat(),
         "items": posts,
         "source": "reddit_api",
         "parameters": {
             "limit": limit,
-            "sort": normalized_sort,
+            "sort": resolved_sort,
+            "sort_requested": requested_sort,
             "time_filter": time_filter,
             "comment_depth": comment_depth,
             "skip_media": skip_media,
+            "identifier": subreddit,
+            "identifier_normalized": target_display,
+            "target_type": target_type,
         },
     }
