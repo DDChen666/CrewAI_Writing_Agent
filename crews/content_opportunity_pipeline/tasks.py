@@ -17,12 +17,15 @@ def build_data_triage_task(agent) -> Task:
         description=(
             "Interpret the operator request '{{user_request}}' and coordinate the Reddit triage tools. "
             "Use reddit_scrape_locator to list candidate files, reddit_scrape_loader to normalise them, "
-            "and reddit_dataset_filter/reddit_dataset_exporter to produce a Cleaned_Content_Stream dataset."
+            "and reddit_dataset_filter/reddit_dataset_exporter to produce a Cleaned_Content_Stream dataset. "
+            "Always apply explicit limits when sampling so downstream agents expand datasets via lookup tools rather than "
+            "relying on oversized previews."
         ),
         expected_output=(
             "Return JSON describing the dataset you prepared, including dataset_id, source_files, subreddit coverage, "
             "item_count, key filtering rules applied, and recommendations for the next stage. Keep the response compact: "
-            "summarise the dataset rather than embedding raw post arrays so downstream agents page data via lookup tools."
+            "summarise the dataset rather than embedding raw post arrays so downstream agents page data via lookup tools. "
+            "Explicitly note preview_truncated or focus_view_truncated flags so the next agent knows when to request more."
         ),
         agent=agent,
         async_execution=False,
@@ -55,7 +58,8 @@ def build_trend_analysis_task(agent, data_triage_task: Task) -> Task:
             "summarise each cluster for downstream consumers using the IdentifiedTrendsReport schema."
         ),
         expected_output=(
-            "Respond with JSON that can be parsed as an IdentifiedTrendsReport, including dataset_id, generated_at and an array of clusters."
+            "Respond with JSON that can be parsed as an IdentifiedTrendsReport, including dataset_id, generated_at and an array of clusters. "
+            "When upstream previews are truncated, request additional context via dataset lookup or the content explorer before expanding your response."
         ),
         agent=agent,
         context=[data_triage_task],
