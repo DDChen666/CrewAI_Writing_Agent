@@ -7,9 +7,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-os.environ.setdefault("CREWAI_TELEMETRY_DISABLED", "true")
-os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
-
 from cli_common import (
     load_config,
     persist_result_if_json,
@@ -81,6 +78,13 @@ def main() -> None:
             sys.exit(1)
         brand_knowledge_base = _load_brand_knowledge_base(resolved_path)
 
+    if not os.environ.get("GEMINI_API_KEY"):
+        print(
+            "GEMINI_API_KEY environment variable is required to run the Content Opportunity Pipeline.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     crew = ContentOpportunityPipelineCrew()
     result = crew.run(user_request=prompt, brand_knowledge_base=brand_knowledge_base)
 
@@ -91,4 +95,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:  # pragma: no cover - runtime guard
+        print(f"Failed to execute Content Opportunity Pipeline: {exc}", file=sys.stderr)
+        sys.exit(1)
