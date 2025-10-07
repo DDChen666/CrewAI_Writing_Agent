@@ -1,64 +1,291 @@
 """Tools supporting the Content Opportunity Pipeline."""
 from __future__ import annotations
 
+import copy
+import importlib
+import importlib.util
 import json
+import logging
+import os
 import re
+import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type
+from typing import Literal
 
+import requests
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, ValidationError
+
+from ..common import ensure_gemini_rate_limit
+
+
+ensure_gemini_rate_limit()
 
 # ---------------------------------------------------------------------------
 # Dataset registry utilities
 # ---------------------------------------------------------------------------
 
-
 @dataclass
 class _StoredDataset:
     """Internal representation of a dataset stored in memory."""
 
-    items: List[Dict[str, Any]]
+    dataset_id: str
+    summaries: List[Dict[str, Any]]
     metadata: Dict[str, Any]
+    raw_items: Dict[str, Dict[str, Any]]
+    normalised_cache: Dict[Tuple[str, Tuple[str, ...]], Dict[str, Any]] = field(default_factory=dict)
+    comment_cache: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self._pointer_index: Dict[str, Dict[str, Any]] = {}
+        self._post_id_index: Dict[str, str] = {}
+        self._pointer_sequence: List[str] = []
+        for summary in self.summaries:
+            pointer_info = summary.setdefault("raw_pointer", {})
+            pointer = pointer_info.get("post_pointer")
+            if not pointer:
+                pointer = str(uuid.uuid4())
+                pointer_info["post_pointer"] = pointer
+            pointer_info["dataset_id"] = self.dataset_id
+            summary["dataset_id"] = self.dataset_id
+            self._pointer_index[pointer] = summary
+            self._pointer_sequence.append(pointer)
+            post_id = summary.get("post_id")
+            if post_id is not None:
+                self._post_id_index[str(post_id)] = pointer
+        # Ensure raw item pointers are aligned with summaries
+        for pointer in list(self.raw_items.keys()):
+            if pointer not in self._pointer_index:
+                logging.debug("Removing raw item without summary pointer: %s", pointer)
+                self.raw_items.pop(pointer)
+
+    def iter_summaries(self) -> List[Dict[str, Any]]:
+        return [copy.deepcopy(summary) for summary in self.summaries]
+
+    def lookup_pointer(self, post_id: str) -> Optional[str]:
+        return self._post_id_index.get(str(post_id))
+
+    def summaries_for_pointers(self, pointers: Sequence[str]) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        for pointer in pointers:
+            summary = self._pointer_index.get(pointer)
+            if summary:
+                results.append(copy.deepcopy(summary))
+        return results
+
+    def raw_for_pointer(self, pointer: str) -> Optional[Dict[str, Any]]:
+        payload = self.raw_items.get(pointer)
+        if payload is None:
+            return None
+        return copy.deepcopy(payload)
+
+    def summary_for_pointer(self, pointer: str) -> Optional[Dict[str, Any]]:
+        summary = self._pointer_index.get(pointer)
+        return copy.deepcopy(summary) if summary is not None else None
+
+    def pointer_sequence(self) -> List[str]:
+        return list(self._pointer_sequence)
+
+    def cache_normalised(self, pointer: str, extra_fields: Tuple[str, ...], payload: Dict[str, Any]) -> None:
+        self.normalised_cache[(pointer, extra_fields)] = copy.deepcopy(payload)
+
+    def get_cached_normalised(self, pointer: str, extra_fields: Tuple[str, ...]) -> Optional[Dict[str, Any]]:
+        cached = self.normalised_cache.get((pointer, extra_fields))
+        return copy.deepcopy(cached) if cached is not None else None
+
+    def cache_comments(self, pointer: str, comments: List[Dict[str, Any]]) -> None:
+        self.comment_cache[pointer] = copy.deepcopy(comments)
+
+    def get_cached_comments(self, pointer: str) -> Optional[List[Dict[str, Any]]]:
+        cached = self.comment_cache.get(pointer)
+        return copy.deepcopy(cached) if cached is not None else None
 
 
 class _DatasetStore:
-    """Lightweight in-memory dataset store used by the triage tools."""
+    """In-memory dataset store underpinning the analysis sandbox."""
 
     def __init__(self) -> None:
         self._datasets: Dict[str, _StoredDataset] = {}
 
-    def store(self, items: List[Dict[str, Any]], metadata: Dict[str, Any]) -> str:
+    def new_dataset_id(self) -> str:
         dataset_id = str(uuid.uuid4())
-        self._datasets[dataset_id] = _StoredDataset(items=items, metadata=metadata)
+        while dataset_id in self._datasets:
+            dataset_id = str(uuid.uuid4())
+        return dataset_id
+
+    def _persist_dataset(self, dataset_id: str, stored: _StoredDataset) -> None:
+        db_path = _dataset_db_path(dataset_id, create=True)
+        connection = sqlite3.connect(db_path)
+        try:
+            with connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS dataset_metadata (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS summaries (sequence INTEGER PRIMARY KEY, pointer TEXT NOT NULL, payload TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS raw_items (pointer TEXT PRIMARY KEY, payload TEXT NOT NULL)"
+                )
+                connection.execute("DELETE FROM dataset_metadata")
+                connection.execute("DELETE FROM summaries")
+                connection.execute("DELETE FROM raw_items")
+                metadata_json = json.dumps(stored.metadata, ensure_ascii=False)
+                connection.execute(
+                    "INSERT INTO dataset_metadata (id, payload) VALUES (1, ?)",
+                    (metadata_json,),
+                )
+
+                written_raw: set[str] = set()
+
+                for index, pointer in enumerate(stored.pointer_sequence()):
+                    summary_payload = stored.summary_for_pointer(pointer) or {}
+                    summary_json = json.dumps(summary_payload, ensure_ascii=False)
+                    connection.execute(
+                        "INSERT INTO summaries (sequence, pointer, payload) VALUES (?, ?, ?)",
+                        (index, pointer, summary_json),
+                    )
+                    raw_payload = stored.raw_for_pointer(pointer)
+                    if raw_payload is not None:
+                        raw_json = json.dumps(raw_payload, ensure_ascii=False)
+                        connection.execute(
+                            "INSERT OR REPLACE INTO raw_items (pointer, payload) VALUES (?, ?)",
+                            (pointer, raw_json),
+                        )
+                        written_raw.add(pointer)
+
+                for pointer, raw_payload in stored.raw_items.items():
+                    if pointer in written_raw:
+                        continue
+                    try:
+                        raw_json = json.dumps(raw_payload, ensure_ascii=False)
+                    except TypeError:
+                        logging.warning(
+                            "Failed to serialise raw payload for pointer %s when persisting dataset %s",
+                            pointer,
+                            dataset_id,
+                        )
+                        continue
+                    connection.execute(
+                        "INSERT OR REPLACE INTO raw_items (pointer, payload) VALUES (?, ?)",
+                        (pointer, raw_json),
+                    )
+
+        finally:
+            connection.close()
+
+    def _load_dataset(self, dataset_id: str) -> _StoredDataset:
+        db_path = _dataset_db_path(dataset_id)
+        if not db_path.exists():
+            raise ValueError(f"Unknown dataset_id: {dataset_id}")
+
+        connection = sqlite3.connect(db_path)
+        try:
+            cursor = connection.execute(
+                "SELECT payload FROM dataset_metadata WHERE id = 1"
+            )
+            row = cursor.fetchone()
+            metadata: Dict[str, Any] = {}
+            if row and row[0]:
+                try:
+                    metadata = json.loads(row[0])
+                except json.JSONDecodeError:
+                    metadata = {}
+
+            summaries: List[Dict[str, Any]] = []
+            cursor = connection.execute(
+                "SELECT pointer, payload FROM summaries ORDER BY sequence ASC"
+            )
+            for pointer, payload in cursor.fetchall():
+                try:
+                    summary_obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.warning("Failed to decode summary payload for pointer %s", pointer)
+                    continue
+                summaries.append(summary_obj)
+
+            raw_items: Dict[str, Dict[str, Any]] = {}
+            cursor = connection.execute("SELECT pointer, payload FROM raw_items")
+            for pointer, payload in cursor.fetchall():
+                try:
+                    raw_obj = json.loads(payload)
+                except json.JSONDecodeError:
+                    logging.warning("Failed to decode raw payload for pointer %s", pointer)
+                    continue
+                raw_items[pointer] = raw_obj
+
+        finally:
+            connection.close()
+
+        stored = _StoredDataset(
+            dataset_id=dataset_id,
+            summaries=summaries,
+            metadata=metadata,
+            raw_items=raw_items,
+        )
+        self._datasets[dataset_id] = stored
+        return stored
+
+    def store(
+        self,
+        dataset_id: str,
+        summaries: List[Dict[str, Any]],
+        metadata: Dict[str, Any],
+        raw_items: Dict[str, Dict[str, Any]],
+    ) -> str:
+        stored = _StoredDataset(
+            dataset_id=dataset_id,
+            summaries=summaries,
+            metadata=metadata,
+            raw_items=raw_items,
+        )
+        self._datasets[dataset_id] = stored
+        try:
+            self._persist_dataset(dataset_id, stored)
+        except Exception as exc:  # pragma: no cover - filesystem guard
+            logging.warning("Failed to persist dataset %s: %s", dataset_id, exc)
         return dataset_id
 
     def get(self, dataset_id: str) -> _StoredDataset:
         try:
             return self._datasets[dataset_id]
-        except KeyError as exc:  # pragma: no cover - defensive guard
-            raise ValueError(f"Unknown dataset_id: {dataset_id}") from exc
-
-    def update(self, dataset_id: str, *, items: List[Dict[str, Any]], metadata: Optional[Dict[str, Any]] = None) -> None:
-        dataset = self.get(dataset_id)
-        dataset.items = items
-        if metadata:
-            dataset.metadata.update(metadata)
-
-    def summary(self, dataset_id: str) -> Dict[str, Any]:
-        dataset = self.get(dataset_id)
-        summary: Dict[str, Any] = {
-            "dataset_id": dataset_id,
-            "item_count": len(dataset.items),
-            "metadata": dataset.metadata,
-        }
-        return summary
+        except KeyError:
+            return self._load_dataset(dataset_id)
 
     def drop(self, dataset_id: str) -> None:
         self._datasets.pop(dataset_id, None)
+        db_path = _dataset_db_path(dataset_id)
+        if db_path.exists():
+            try:
+                db_path.unlink()
+                parent = db_path.parent
+                if parent.exists() and not any(parent.iterdir()):
+                    parent.rmdir()
+            except OSError:
+                logging.warning("Failed to remove dataset catalog for %s", dataset_id)
+
+    def summary(self, dataset_id: str) -> Dict[str, Any]:
+        dataset = self.get(dataset_id)
+        return {
+            "dataset_id": dataset_id,
+            "item_count": len(dataset.summaries),
+            "metadata": dataset.metadata,
+        }
+
+
+CATALOG_ROOT = Path(__file__).resolve().parents[2] / "data_catalog"
+
+
+def _dataset_db_path(dataset_id: str, *, create: bool = False) -> Path:
+    CATALOG_ROOT.mkdir(parents=True, exist_ok=True)
+    dataset_dir = CATALOG_ROOT / dataset_id
+    if create:
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+    return dataset_dir / "index.db"
 
 
 _DATASET_STORE = _DatasetStore()
@@ -67,6 +294,10 @@ _DATASET_STORE = _DatasetStore()
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+DEFAULT_SAMPLE_LIMIT = 20
+DEFAULT_LOADER_PREVIEW_LIMIT = 5
+DEFAULT_COMMENT_DESCENDANT_LIMIT = 100
 
 
 _DEFAULT_FIELD_MAPPING: Dict[str, Tuple[str, Optional[str]]] = {
@@ -99,28 +330,327 @@ def _resolve_field(payload: Dict[str, Any], dotted_path: str, default: Any = Non
     return current
 
 
-def _normalise_post(item: Dict[str, Any], extra_fields: Sequence[str]) -> Dict[str, Any]:
-    """Produce a normalised dictionary for downstream agents."""
+def _truncate_text(text: Optional[str], length: int = 240) -> Optional[str]:
+    if not isinstance(text, str):
+        return None
+    cleaned = text.strip()
+    if len(cleaned) <= length:
+        return cleaned
+    return cleaned[: length - 3].rstrip() + "..."
 
-    normalised: Dict[str, Any] = {}
+
+def _summary_to_preview(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    """Project a lightweight preview payload from a post summary."""
+
+    preview: Dict[str, Any] = {
+        "dataset_id": summary.get("dataset_id"),
+        "post_id": summary.get("post_id"),
+        "title": summary.get("title"),
+        "permalink": summary.get("permalink"),
+        "score": summary.get("score"),
+        "num_comments": summary.get("num_comments"),
+        "body_preview": summary.get("body_preview"),
+        "raw_pointer": summary.get("raw_pointer"),
+    }
+    top_level_comment_count = summary.get("top_level_comment_count")
+    if top_level_comment_count is not None:
+        preview["top_level_comment_count"] = top_level_comment_count
+    subreddit = summary.get("subreddit")
+    if subreddit is not None:
+        preview["subreddit"] = subreddit
+    created_at_iso = summary.get("created_at_iso")
+    if created_at_iso is not None:
+        preview["created_at_iso"] = created_at_iso
+    return {key: value for key, value in preview.items() if value is not None}
+
+
+def _build_preview_items(
+    summaries: Sequence[Mapping[str, Any]],
+    *,
+    limit: Optional[int],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    ordered = list(summaries)
+    if limit is None:
+        selected = ordered
+    else:
+        effective_limit = max(0, limit)
+        selected = ordered[:effective_limit]
+    preview_items = [_summary_to_preview(summary) for summary in selected]
+    truncated = len(ordered) > len(preview_items)
+    return preview_items, truncated
+
+
+def _build_post_summary(
+    raw_item: Mapping[str, Any],
+    *,
+    pointer: str,
+    dataset_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    created_value = raw_item.get("created_utc")
+    created_iso: Optional[str] = None
+    created_float: Optional[float] = None
+    if isinstance(created_value, (int, float)):
+        created_float = float(created_value)
+        created_iso = datetime.utcfromtimestamp(created_float).isoformat() + "Z"
+
+    score = _resolve_field(raw_item, "statistics.score")
+    upvote_ratio = _resolve_field(raw_item, "statistics.upvote_ratio")
+    num_comments = _resolve_field(raw_item, "statistics.num_comments")
+    comments = raw_item.get("comments")
+    top_level_comment_count = len(comments) if isinstance(comments, list) else 0
+
+    summary: Dict[str, Any] = {
+        "post_id": raw_item.get("id"),
+        "title": raw_item.get("title"),
+        "permalink": raw_item.get("permalink"),
+        "url": raw_item.get("url"),
+        "author": raw_item.get("author"),
+        "created_utc": created_float,
+        "created_at_iso": created_iso,
+        "score": score,
+        "upvote_ratio": upvote_ratio,
+        "num_comments": num_comments,
+        "flair": raw_item.get("flair"),
+        "over_18": raw_item.get("over_18"),
+        "subreddit": dataset_context.get("subreddit") or raw_item.get("subreddit"),
+        "platform": dataset_context.get("platform", "reddit"),
+        "body_preview": _truncate_text(raw_item.get("selftext")),
+        "top_level_comment_count": top_level_comment_count,
+        "raw_pointer": {"post_pointer": pointer},
+        "media_post_hint": _resolve_field(raw_item, "media.post_hint"),
+        "media_is_video": _resolve_field(raw_item, "media.is_video"),
+        "has_media": bool(raw_item.get("media")),
+        "source_file": dataset_context.get("source_file"),
+        "scraped_at": dataset_context.get("scraped_at"),
+        "target": dataset_context.get("target"),
+        "statistics": {
+            "score": score,
+            "upvote_ratio": upvote_ratio,
+            "num_comments": num_comments,
+        },
+    }
+    return summary
+
+
+def _prepare_comment_tree(raw_comment: Mapping[str, Any]) -> Dict[str, Any]:
+    created_value = raw_comment.get("created_utc")
+    created_iso: Optional[str] = None
+    created_float: Optional[float] = None
+    if isinstance(created_value, (int, float)):
+        created_float = float(created_value)
+        created_iso = datetime.utcfromtimestamp(created_float).isoformat() + "Z"
+    replies_raw = raw_comment.get("replies")
+    replies: List[Dict[str, Any]] = []
+    if isinstance(replies_raw, list):
+        for child in replies_raw:
+            if isinstance(child, Mapping):
+                replies.append(_prepare_comment_tree(child))
+    comment: Dict[str, Any] = {
+        "id": raw_comment.get("id"),
+        "author": raw_comment.get("author"),
+        "body": raw_comment.get("body"),
+        "score": raw_comment.get("score"),
+        "created_utc": created_float,
+        "created_at_iso": created_iso,
+        "replies": replies,
+    }
+    comment["replies_count"] = len(replies)
+    return comment
+
+
+def _count_comment_tree(comments: Any) -> int:
+    if not isinstance(comments, list):
+        return 0
+    total = 0
+    for comment in comments:
+        if not isinstance(comment, Mapping):
+            continue
+        total += 1
+        total += _count_comment_tree(comment.get("replies"))
+    return total
+
+
+def _filter_comment_list(
+    comments: Sequence[Dict[str, Any]],
+    filters: Optional[Sequence[FilterCondition]],
+) -> List[Dict[str, Any]]:
+    if not filters:
+        return [copy.deepcopy(comment) for comment in comments]
+
+    filtered: List[Dict[str, Any]] = []
+    for comment in comments:
+        include = True
+        for condition in filters:
+            candidate = _resolve_field(comment, condition.field)
+            if not _apply_condition(candidate, operator=condition.operator, expected=condition.value):
+                include = False
+                break
+        # Always evaluate replies so that qualifying children surface even when parent is filtered out.
+        replies = _filter_comment_list(comment.get("replies", []), filters)
+        working_comment = copy.deepcopy(comment)
+        working_comment["replies"] = replies
+        working_comment["replies_count"] = len(replies)
+        if include or replies:
+            filtered.append(working_comment)
+    return filtered
+
+
+def _sort_and_limit_comments(
+    comments: List[Dict[str, Any]],
+    *,
+    sort_by: Optional[str],
+    limit: Optional[int],
+) -> List[Dict[str, Any]]:
+    if sort_by:
+        comments.sort(key=lambda item: _resolve_field(item, sort_by), reverse=True)
+    if limit is not None:
+        return comments[:limit]
+    return comments
+
+
+def _enforce_comment_cap(
+    comments: Sequence[Dict[str, Any]],
+    *,
+    max_descendants: Optional[int],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Trim nested comment trees to respect a descendant cap."""
+
+    if max_descendants is None or max_descendants <= 0:
+        return [copy.deepcopy(comment) for comment in comments], False
+
+    remaining = max_descendants
+    truncated = False
+
+    def clone_comment(comment: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        nonlocal remaining, truncated
+        if remaining <= 0:
+            truncated = True
+            return None
+        remaining -= 1
+        base: Dict[str, Any] = {
+            key: copy.deepcopy(value)
+            for key, value in comment.items()
+            if key != "replies"
+        }
+        replies: List[Dict[str, Any]] = []
+        raw_replies = comment.get("replies")
+        if isinstance(raw_replies, list):
+            for child in raw_replies:
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if isinstance(child, Mapping):
+                    cloned = clone_comment(child)
+                    if cloned is None:
+                        break
+                    replies.append(cloned)
+        base["replies"] = replies
+        base["replies_count"] = len(replies)
+        return base
+
+    capped: List[Dict[str, Any]] = []
+    for comment in comments:
+        if remaining <= 0:
+            truncated = True
+            break
+        cloned_comment = clone_comment(comment)
+        if cloned_comment is None:
+            break
+        capped.append(cloned_comment)
+
+    if len(capped) < len(comments):
+        truncated = True
+
+    return capped, truncated
+
+
+def _retrieve_comment_tree(
+    dataset: _StoredDataset, pointer: str, raw_item: Mapping[str, Any]
+) -> List[Dict[str, Any]]:
+    cached = dataset.get_cached_comments(pointer)
+    if cached is not None:
+        return cached
+    comments: List[Dict[str, Any]] = []
+    raw_comments = raw_item.get("comments")
+    if isinstance(raw_comments, list):
+        for raw_comment in raw_comments:
+            if isinstance(raw_comment, Mapping):
+                comments.append(_prepare_comment_tree(raw_comment))
+    dataset.cache_comments(pointer, comments)
+    cached_after_store = dataset.get_cached_comments(pointer)
+    return cached_after_store if cached_after_store is not None else []
+
+
+def _normalise_post(
+    summary: Mapping[str, Any],
+    raw_item: Mapping[str, Any],
+    *,
+    extra_fields: Sequence[str] = (),
+    include_comments: bool = False,
+    comments: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    normalised: Dict[str, Any] = {
+        "dataset_id": summary.get("dataset_id"),
+        "post_id": summary.get("post_id"),
+        "title": summary.get("title"),
+        "body": raw_item.get("selftext"),
+        "permalink": summary.get("permalink"),
+        "url": summary.get("url"),
+        "author": summary.get("author"),
+        "created_utc": summary.get("created_utc"),
+        "created_at_iso": summary.get("created_at_iso"),
+        "flair": summary.get("flair"),
+        "over_18": summary.get("over_18"),
+        "subreddit": summary.get("subreddit"),
+        "platform": summary.get("platform", "reddit"),
+        "statistics": summary.get("statistics"),
+        "raw_pointer": summary.get("raw_pointer"),
+        "body_preview": summary.get("body_preview"),
+        "top_level_comment_count": summary.get("top_level_comment_count"),
+        "media": copy.deepcopy(raw_item.get("media")),
+        "target": summary.get("target"),
+        "scraped_at": summary.get("scraped_at"),
+        "source_file": summary.get("source_file"),
+    }
+
     for output_field, (source_field, _) in _DEFAULT_FIELD_MAPPING.items():
-        value = _resolve_field(item, source_field)
+        if output_field in normalised and normalised[output_field] is not None:
+            continue
+        value = _resolve_field(raw_item, source_field)
         if output_field == "created_utc" and isinstance(value, (int, float)):
             normalised["created_utc"] = float(value)
             normalised["created_at_iso"] = datetime.utcfromtimestamp(float(value)).isoformat() + "Z"
         else:
             normalised[output_field] = value
+
     for field in extra_fields:
         if field in normalised:
             continue
-        normalised[field] = _resolve_field(item, field)
-    normalised["subreddit"] = _resolve_field(item, "subreddit")
-    normalised["platform"] = "reddit"
+        normalised[field] = _resolve_field(raw_item, field)
+
+    if include_comments:
+        normalised["comments"] = comments or []
     return normalised
 
 
 def _apply_condition(value: Any, *, operator: str, expected: Any) -> bool:
     """Evaluate a comparison condition."""
+
+    operator_str = operator if isinstance(operator, str) else str(operator or "")
+    normalised_operator = operator_str.lower()
+    alias_map = {
+        "gte": "ge",
+        "lte": "le",
+        "==": "eq",
+        "!=": "ne",
+        ">": "gt",
+        ">=": "ge",
+        "<": "lt",
+        "<=": "le",
+        "equals": "eq",
+        "not_equals": "ne",
+    }
+    operator = alias_map.get(normalised_operator, normalised_operator)
 
     if operator == "exists":
         return value is not None
@@ -195,7 +725,7 @@ def _apply_condition(value: Any, *, operator: str, expected: Any) -> bool:
 
 
 class RedditLocatorArgs(BaseModel):
-    base_dir: str = Field("scraepr", description="Root directory that contains scraped JSON files")
+    base_dir: str = Field("scraepr_outputs", description="Root directory that contains scraped JSON files")
     date_prefixes: Optional[List[str]] = Field(
         None,
         description="Specific date directories (YYYYMMDD) to consider. If omitted, search all dates.",
@@ -272,6 +802,12 @@ class RedditDatasetExportArgs(BaseModel):
         True,
         description="Include aggregate statistics (score totals, averages, etc.) in the export payload.",
     )
+    preview_limit: Optional[int] = Field(
+        10,
+        ge=1,
+        le=200,
+        description="Cap on how many items are embedded inside content_stream.preview.items. Increase explicitly or set to null when a larger preview is required.",
+    )
 
 
 class RedditDatasetLookupArgs(BaseModel):
@@ -284,9 +820,67 @@ class RedditDatasetLookupArgs(BaseModel):
         None,
         ge=1,
         le=500,
-        description="Maximum number of posts to return when post_ids is not supplied.",
+        description="Maximum number of posts to return when post_ids is not supplied. Defaults to 20 when omitted.",
     )
     include_metadata: bool = Field(False, description="Whether to include dataset metadata in the response")
+
+
+class ContentExplorerArgs(BaseModel):
+    dataset_id: str = Field(..., description="Identifier associated with a stored dataset")
+    post_ids: Optional[List[str]] = Field(
+        None,
+        description="Specific post_ids to inspect. When omitted results follow the dataset ordering with optional limit.",
+    )
+    limit: Optional[int] = Field(
+        None,
+        ge=1,
+        le=500,
+        description="Maximum number of items to return when post_ids is not supplied. Defaults to 20 when omitted.",
+    )
+    data_level: Literal["summary", "normalized", "full_comments", "raw"] = Field(
+        "summary",
+        description="Controls the data depth returned for each post.",
+    )
+    include_dataset_metadata: bool = Field(
+        False,
+        description="Include dataset-level metadata in the response payload.",
+    )
+    extra_fields: Optional[FieldSelection] = Field(
+        None,
+        description="Additional dotted raw fields to project into the normalised payload when requested.",
+    )
+    comment_filters: Optional[List[FilterCondition]] = Field(
+        None,
+        description="Filters applied to comment payloads when data_level requires comments.",
+    )
+    comment_sort_by: Optional[str] = Field(
+        None,
+        description="Field used to sort top-level comments when retrieving comment trees.",
+    )
+    comment_limit: Optional[int] = Field(
+        None,
+        ge=1,
+        le=200,
+        description="Limit the number of top-level comments returned after sorting and filtering.",
+    )
+
+
+class MediaAnalyzerArgs(BaseModel):
+    url: str = Field(..., description="Direct URL to an image or video asset to analyse")
+    prompt: Optional[str] = Field(
+        None,
+        description="Optional analysis prompt sent to the Gemini multimodal model. A default prompt is used when omitted.",
+    )
+    model: str = Field(
+        "gemini-1.5-flash",
+        description="Gemini model identifier to use for multimodal analysis.",
+    )
+    download_timeout: int = Field(
+        15,
+        ge=1,
+        le=60,
+        description="Timeout in seconds for downloading the media asset before analysis.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -304,7 +898,7 @@ class RedditScrapeLocatorTool(BaseTool):
 
     def _run(  # type: ignore[override]
         self,
-        base_dir: str = "scraepr",
+        base_dir: str = "scraepr_outputs",
         date_prefixes: Optional[List[str]] = None,
         platform: Optional[str] = None,
         limit: int = 20,
@@ -409,11 +1003,11 @@ class RedditScrapeLoaderTool(BaseTool):
     )
     args_schema: Type[BaseModel] = RedditLoaderArgs
 
-    def _filter_item(self, item: Dict[str, Any], filters: Optional[List[FilterCondition]]) -> bool:
+    def _filter_item(self, item: Mapping[str, Any], filters: Optional[List[FilterCondition]]) -> bool:
         if not filters:
             return True
         for rule in filters:
-            candidate = item.get(rule.field)
+            candidate = _resolve_field(item, rule.field)
             if not _apply_condition(candidate, operator=rule.operator, expected=rule.value):
                 return False
         return True
@@ -434,10 +1028,50 @@ class RedditScrapeLoaderTool(BaseTool):
                 ensure_ascii=False,
             )
 
+        dataset_id = _DATASET_STORE.new_dataset_id()
         extra_fields: Sequence[str] = list(select_fields or [])
-        combined_items: List[Dict[str, Any]] = []
+        prepared_filters: Optional[List[FilterCondition]] = None
+        if filters:
+            prepared_filters = []
+            for rule in filters:
+                if isinstance(rule, FilterCondition):
+                    prepared_filters.append(rule)
+                elif isinstance(rule, Mapping):
+                    try:
+                        prepared_filters.append(FilterCondition(**rule))
+                    except ValidationError as exc:
+                        logging.warning("Failed to parse filter condition %s: %s", rule, exc)
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "Invalid filter specification supplied to reddit_scrape_loader.",
+                                "tool": self.name,
+                            },
+                            ensure_ascii=False,
+                        )
+                else:
+                    logging.warning(
+                        "Unsupported filter type %s supplied to reddit_scrape_loader",
+                        type(rule).__name__,
+                    )
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "Invalid filter specification supplied to reddit_scrape_loader.",
+                            "tool": self.name,
+                        },
+                        ensure_ascii=False,
+                    )
+        summaries: List[Dict[str, Any]] = []
+        raw_items: Dict[str, Dict[str, Any]] = {}
         source_files: List[str] = []
         subreddits: List[str] = []
+        users: List[str] = []
+        targets: List[str] = []
+        scraped_at_values: List[str] = []
+        score_values: List[float] = []
+        comment_totals: List[int] = []
+        deep_comment_count = 0
 
         for raw_path in file_paths:
             path = Path(raw_path)
@@ -446,53 +1080,145 @@ class RedditScrapeLoaderTool(BaseTool):
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                logging.warning("Failed to load scrape file %s", path)
                 continue
             if payload.get("platform") != "reddit":
                 continue
-            source_files.append(str(path.as_posix()))
-            subreddit = payload.get("subreddit")
-            if subreddit:
-                subreddits.append(subreddit)
-            for raw_item in payload.get("items", []):
-                normalised = _normalise_post(raw_item, extra_fields)
-                if drop_removed and isinstance(normalised.get("body"), str) and normalised["body"].lower() in {"[removed]", "[deleted]"}:
-                    continue
-                combined_items.append(normalised)
 
-        if filters:
-            filtered: List[Dict[str, Any]] = []
-            for item in combined_items:
-                if self._filter_item(item, filters):
-                    filtered.append(item)
-            combined_items = filtered
+            dataset_context = {
+                "platform": payload.get("platform"),
+                "subreddit": payload.get("subreddit"),
+                "target": payload.get("target"),
+                "scraped_at": payload.get("scraped_at"),
+                "source_file": str(path.as_posix()),
+            }
+
+            source_files.append(dataset_context["source_file"])
+            if dataset_context["subreddit"]:
+                subreddits.append(dataset_context["subreddit"])
+            if payload.get("user"):
+                users.append(payload.get("user"))
+            target = payload.get("target")
+            if isinstance(target, Mapping) and target.get("name"):
+                targets.append(str(target["name"]))
+            scraped_at = payload.get("scraped_at")
+            if scraped_at:
+                scraped_at_values.append(str(scraped_at))
+
+            items_payload = payload.get("items")
+            if not isinstance(items_payload, list):
+                continue
+
+            for raw_item in items_payload:
+                if not isinstance(raw_item, Mapping):
+                    continue
+                pointer = str(uuid.uuid4())
+                raw_items[pointer] = copy.deepcopy(dict(raw_item))
+                summary = _build_post_summary(raw_item, pointer=pointer, dataset_context=dataset_context)
+                if drop_removed and isinstance(raw_item.get("selftext"), str):
+                    body_value = raw_item.get("selftext", "").strip().lower()
+                    if body_value in {"[removed]", "[deleted]"}:
+                        # Even though we keep the raw item for traceability, we flag the summary for downstream filtering.
+                        summary["body_removed"] = True
+                # Attach any additional select fields directly to the summary for quick reference.
+                for field in extra_fields:
+                    if field in summary:
+                        continue
+                    summary[field] = _resolve_field(raw_item, field)
+                # Aggregate statistics for the overview report.
+                score_val = summary.get("score")
+                if isinstance(score_val, (int, float)):
+                    score_values.append(float(score_val))
+                comment_total = summary.get("num_comments")
+                if isinstance(comment_total, (int, float)):
+                    comment_totals.append(int(comment_total))
+                deep_comment_count += _count_comment_tree(raw_item.get("comments"))
+                summaries.append(summary)
 
         if sort_by:
-            combined_items.sort(key=lambda itm: itm.get(sort_by), reverse=descending)
+            summaries.sort(key=lambda itm: _resolve_field(itm, sort_by), reverse=descending)
 
-        if max_items is not None:
-            combined_items = combined_items[: max_items]
+        overview_highlights: Dict[str, Any] = {}
+        if summaries:
+            overview_highlights = {
+                "total_posts_indexed": len(summaries),
+                "total_top_level_comments": int(sum(comment_totals)) if comment_totals else 0,
+                "total_comment_depth": int(deep_comment_count),
+                "score_max": max(score_values) if score_values else None,
+                "score_min": min(score_values) if score_values else None,
+                "score_average": (sum(score_values) / len(score_values)) if score_values else None,
+                "comment_average": (sum(comment_totals) / len(comment_totals)) if comment_totals else None,
+                "subreddits": sorted({sub for sub in subreddits if sub}),
+                "users": sorted({usr for usr in users if usr}),
+                "targets": sorted({tgt for tgt in targets if tgt}),
+                "source_files": source_files,
+                "scrape_window": {
+                    "earliest": min(scraped_at_values) if scraped_at_values else None,
+                    "latest": max(scraped_at_values) if scraped_at_values else None,
+                },
+            }
 
         dataset_metadata: Dict[str, Any] = {
             "source_files": source_files,
             "subreddits": sorted({sub for sub in subreddits if sub}),
+            "users": sorted({usr for usr in users if usr}),
+            "targets": sorted({tgt for tgt in targets if tgt}),
             "fields": list(_DEFAULT_FIELD_MAPPING.keys()) + list(extra_fields),
-            "total_items": len(combined_items),
+            "total_items": len(summaries),
+            "overview": overview_highlights,
         }
-        dataset_id = _DATASET_STORE.store(combined_items, dataset_metadata)
 
-        preview_items = combined_items[: min(len(combined_items), 5)]
+        _DATASET_STORE.store(dataset_id, summaries, dataset_metadata, raw_items)
 
-        return json.dumps(
-            {
-                "status": "success",
-                "tool": self.name,
-                "dataset_id": dataset_id,
-                "item_count": len(combined_items),
-                "preview": preview_items,
-                "metadata": dataset_metadata,
-            },
-            ensure_ascii=False,
+        preview_items, preview_truncated = _build_preview_items(
+            summaries,
+            limit=DEFAULT_LOADER_PREVIEW_LIMIT,
         )
+
+        focus_view: Optional[List[Dict[str, Any]]] = None
+        focus_view_truncated = False
+        focus_view_total_matches: Optional[int] = None
+        focus_view_limit: Optional[int] = None
+        focus_filters_dump: Optional[List[Dict[str, Any]]] = None
+        if prepared_filters or max_items is not None:
+            filtered_candidates = [
+                summary for summary in summaries if self._filter_item(summary, prepared_filters)
+            ]
+            focus_view_total_matches = len(filtered_candidates)
+            focus_filters_dump = (
+                [rule.model_dump() for rule in prepared_filters] if prepared_filters else None
+            )
+            applied_limit: Optional[int] = max_items
+            if applied_limit is None and len(filtered_candidates) > DEFAULT_SAMPLE_LIMIT:
+                applied_limit = DEFAULT_SAMPLE_LIMIT
+            if applied_limit is not None:
+                focus_view_limit = applied_limit
+                filtered_candidates = filtered_candidates[:applied_limit]
+                focus_view_truncated = focus_view_total_matches > len(filtered_candidates)
+            focus_view = [_summary_to_preview(summary) for summary in filtered_candidates]
+
+        payload: Dict[str, Any] = {
+            "status": "success",
+            "tool": self.name,
+            "dataset_id": dataset_id,
+            "indexed_item_count": len(summaries),
+            "preview": preview_items,
+            "metadata": dataset_metadata,
+        }
+        payload["preview_limit"] = DEFAULT_LOADER_PREVIEW_LIMIT
+        payload["preview_truncated"] = preview_truncated
+        if focus_view is not None:
+            payload["focus_view"] = focus_view
+            payload["focus_view_truncated"] = focus_view_truncated
+            payload["focus_view_count"] = len(focus_view)
+            if focus_view_total_matches is not None:
+                payload["focus_view_total_matches"] = focus_view_total_matches
+            if focus_view_limit is not None:
+                payload["focus_view_limit"] = focus_view_limit
+            if focus_filters_dump:
+                payload["focus_view_filters"] = focus_filters_dump
+
+        return json.dumps(payload, ensure_ascii=False)
 
 
 class RedditDatasetFilterTool(BaseTool):
@@ -516,14 +1242,47 @@ class RedditDatasetFilterTool(BaseTool):
                 ensure_ascii=False,
             )
 
-        working_items = list(dataset.items)
+        working_items = dataset.iter_summaries()
 
+        prepared_filters: Optional[List[FilterCondition]] = None
         if filters:
+            prepared_filters = []
+            for rule in filters:
+                if isinstance(rule, FilterCondition):
+                    prepared_filters.append(rule)
+                elif isinstance(rule, Mapping):
+                    try:
+                        prepared_filters.append(FilterCondition.model_validate(rule))
+                    except ValidationError as exc:
+                        logging.warning("Failed to parse filter condition %s: %s", rule, exc)
+                        return json.dumps(
+                            {
+                                "status": "error",
+                                "message": "Invalid filter specification supplied to reddit_dataset_filter.",
+                                "tool": self.name,
+                            },
+                            ensure_ascii=False,
+                        )
+                else:
+                    logging.warning(
+                        "Unsupported filter type %s supplied to reddit_dataset_filter",
+                        type(rule).__name__,
+                    )
+                    return json.dumps(
+                        {
+                            "status": "error",
+                            "message": "Invalid filter specification supplied to reddit_dataset_filter.",
+                            "tool": self.name,
+                        },
+                        ensure_ascii=False,
+                    )
+
+        if prepared_filters:
             filtered: List[Dict[str, Any]] = []
             for item in working_items:
                 include = True
-                for rule in filters:
-                    candidate = item.get(rule.field)
+                for rule in prepared_filters:
+                    candidate = _resolve_field(item, rule.field)
                     if not _apply_condition(candidate, operator=rule.operator, expected=rule.value):
                         include = False
                         break
@@ -532,15 +1291,39 @@ class RedditDatasetFilterTool(BaseTool):
             working_items = filtered
 
         if sort_by:
-            working_items.sort(key=lambda itm: itm.get(sort_by), reverse=descending)
+            working_items.sort(key=lambda itm: _resolve_field(itm, sort_by), reverse=descending)
 
         if limit is not None:
             working_items = working_items[:limit]
 
+        pointers: List[str] = []
+        for item in working_items:
+            pointer = _resolve_field(item, "raw_pointer.post_pointer")
+            if isinstance(pointer, str):
+                pointers.append(pointer)
+
+        raw_subset: Dict[str, Dict[str, Any]] = {}
+        for pointer in pointers:
+            raw_payload = dataset.raw_for_pointer(pointer)
+            if raw_payload is not None:
+                raw_subset[pointer] = raw_payload
+
         new_metadata = dict(dataset.metadata)
-        new_metadata["filtered_from"] = dataset_id
-        new_metadata["total_items"] = len(working_items)
-        new_dataset_id = _DATASET_STORE.store(working_items, new_metadata)
+        new_metadata.update(
+            {
+                "filtered_from": dataset_id,
+                "total_items": len(working_items),
+                "applied_filters": [f.model_dump() for f in prepared_filters] if prepared_filters else None,
+                "sort_by": sort_by,
+                "descending": descending,
+                "limit": limit,
+            }
+        )
+        if not prepared_filters:
+            new_metadata.pop("applied_filters", None)
+
+        new_dataset_id = _DATASET_STORE.new_dataset_id()
+        _DATASET_STORE.store(new_dataset_id, working_items, new_metadata, raw_subset)
 
         preview = working_items[: min(len(working_items), 5)]
 
@@ -569,6 +1352,7 @@ class RedditDatasetExportTool(BaseTool):
         dataset_id: str,
         limit: Optional[int] = None,
         include_statistics: bool = True,
+        preview_limit: Optional[int] = 10,
     ) -> str:
         try:
             dataset = _DATASET_STORE.get(dataset_id)
@@ -578,9 +1362,14 @@ class RedditDatasetExportTool(BaseTool):
                 ensure_ascii=False,
             )
 
-        items = list(dataset.items)
+        items = dataset.iter_summaries()
         if limit is not None:
             items = items[:limit]
+
+        preview_items, preview_truncated = _build_preview_items(
+            items,
+            limit=preview_limit,
+        )
 
         export_payload: Dict[str, Any] = {
             "status": "success",
@@ -592,9 +1381,18 @@ class RedditDatasetExportTool(BaseTool):
                 "source_files": dataset.metadata.get("source_files", []),
                 "subreddits": dataset.metadata.get("subreddits", []),
                 "item_count": len(items),
-                "items": items,
+                "preview": {
+                    "limit": preview_limit,
+                    "included": len(preview_items),
+                    "total_available": len(items),
+                    "truncated": preview_truncated,
+                    "items": preview_items,
+                },
             },
         }
+
+        if limit is not None:
+            export_payload["content_stream"]["source_limit"] = limit
 
         if include_statistics:
             scores = [item.get("score") for item in items if isinstance(item.get("score"), (int, float))]
@@ -642,13 +1440,24 @@ class RedditDatasetLookupTool(BaseTool):
                 ensure_ascii=False,
             )
 
-        working_items = list(dataset.items)
+        all_items = dataset.iter_summaries()
+        total_available = len(all_items)
+        working_items = all_items
+        applied_limit: Optional[int] = None
+        truncated = False
 
         if post_ids:
             requested = {pid for pid in post_ids}
             working_items = [item for item in working_items if str(item.get("post_id")) in requested]
-        elif limit is not None:
-            working_items = working_items[:limit]
+        else:
+            if limit is None:
+                if total_available:
+                    applied_limit = min(DEFAULT_SAMPLE_LIMIT, total_available)
+            else:
+                applied_limit = min(limit, total_available)
+            if applied_limit is not None:
+                truncated = total_available > applied_limit
+                working_items = working_items[:applied_limit]
 
         payload: Dict[str, Any] = {
             "status": "success",
@@ -657,10 +1466,291 @@ class RedditDatasetLookupTool(BaseTool):
             "item_count": len(working_items),
             "items": working_items,
         }
+        if applied_limit is not None:
+            payload["applied_limit"] = applied_limit
+        payload["total_available"] = total_available
+        payload["truncated"] = truncated
         if include_metadata:
             payload["metadata"] = dataset.metadata
 
         return json.dumps(payload, ensure_ascii=False)
+
+
+class ContentExplorerTool(BaseTool):
+    name: str = "content_explorer"
+    description: str = (
+        "Explore stored Reddit datasets at varying levels of depth. Supports summary inspection, "
+        "normalised post retrieval, comment tree expansion and raw payload access on demand."
+    )
+    args_schema: Type[BaseModel] = ContentExplorerArgs
+
+    def _select_pointers(
+        self,
+        dataset: _StoredDataset,
+        post_ids: Optional[Sequence[str]],
+        limit: Optional[int],
+    ) -> Tuple[List[str], bool, Optional[int]]:
+        if post_ids:
+            ordered: List[str] = []
+            for post_id in post_ids:
+                pointer = dataset.lookup_pointer(post_id)
+                if pointer:
+                    ordered.append(pointer)
+            return ordered, False, None
+
+        pointers = dataset.pointer_sequence()
+        pointer_count = len(pointers)
+        if pointer_count == 0:
+            return [], False, None
+
+        truncated = False
+        applied_limit: Optional[int]
+        if limit is not None:
+            applied_limit = min(limit, pointer_count)
+            truncated = pointer_count > applied_limit
+        else:
+            if pointer_count > DEFAULT_SAMPLE_LIMIT:
+                applied_limit = DEFAULT_SAMPLE_LIMIT
+                truncated = True
+            else:
+                applied_limit = pointer_count
+
+        selected = pointers[:applied_limit]
+        reported_limit: Optional[int]
+        if limit is not None or truncated:
+            reported_limit = applied_limit
+        else:
+            reported_limit = None
+        return selected, truncated, reported_limit
+
+    def _run(  # type: ignore[override]
+        self,
+        dataset_id: str,
+        post_ids: Optional[List[str]] = None,
+        limit: Optional[int] = None,
+        data_level: str = "summary",
+        include_dataset_metadata: bool = False,
+        extra_fields: Optional[Sequence[str]] = None,
+        comment_filters: Optional[List[FilterCondition]] = None,
+        comment_sort_by: Optional[str] = None,
+        comment_limit: Optional[int] = None,
+    ) -> str:
+        try:
+            dataset = _DATASET_STORE.get(dataset_id)
+        except ValueError as exc:
+            return json.dumps(
+                {"status": "error", "message": str(exc), "tool": self.name},
+                ensure_ascii=False,
+            )
+
+        pointers, pointers_truncated, applied_limit = self._select_pointers(dataset, post_ids, limit)
+        extra_fields_tuple: Tuple[str, ...] = tuple(sorted(extra_fields or []))
+
+        items: List[Dict[str, Any]]
+        selected_post_ids: List[str] = []
+
+        if data_level == "summary":
+            items = dataset.summaries_for_pointers(pointers)
+            selected_post_ids = [str(item.get("post_id")) for item in items if item.get("post_id") is not None]
+        else:
+            items = []
+            for pointer in pointers:
+                summary = dataset.summary_for_pointer(pointer)
+                raw_item = dataset.raw_for_pointer(pointer)
+                if summary is None or raw_item is None:
+                    continue
+                if summary.get("post_id") is not None:
+                    selected_post_ids.append(str(summary["post_id"]))
+
+                if data_level == "raw":
+                    items.append(
+                        {
+                            "summary": summary,
+                            "raw_pointer": summary.get("raw_pointer"),
+                            "raw": raw_item,
+                        }
+                    )
+                    continue
+
+                cached = dataset.get_cached_normalised(pointer, extra_fields_tuple)
+                if cached is None:
+                    cached = _normalise_post(
+                        summary,
+                        raw_item,
+                        extra_fields=extra_fields_tuple,
+                    )
+                    dataset.cache_normalised(pointer, extra_fields_tuple, cached)
+                base_payload = copy.deepcopy(cached)
+
+                if data_level == "full_comments":
+                    comment_tree = _retrieve_comment_tree(dataset, pointer, raw_item)
+                    filtered_comments = _filter_comment_list(comment_tree, comment_filters)
+                    filtered_comments = _sort_and_limit_comments(
+                        filtered_comments,
+                        sort_by=comment_sort_by,
+                        limit=comment_limit,
+                    )
+                    capped_comments, comments_truncated = _enforce_comment_cap(
+                        filtered_comments,
+                        max_descendants=DEFAULT_COMMENT_DESCENDANT_LIMIT,
+                    )
+                    base_payload["comments"] = capped_comments
+                    total_count = 0
+                    for comment in capped_comments:
+                        total_count += 1 + _count_comment_tree(comment.get("replies"))
+                    base_payload["comment_summary"] = {
+                        "top_level_count": len(capped_comments),
+                        "total_count": total_count,
+                        "filters_applied": [f.model_dump() for f in comment_filters] if comment_filters else None,
+                        "sort_by": comment_sort_by,
+                        "limit": comment_limit,
+                        "descendant_cap": DEFAULT_COMMENT_DESCENDANT_LIMIT,
+                        "descendants_truncated": comments_truncated,
+                    }
+                items.append(base_payload)
+
+        payload: Dict[str, Any] = {
+            "status": "success",
+            "tool": self.name,
+            "dataset_id": dataset_id,
+            "data_level": data_level,
+            "item_count": len(items),
+            "items": items,
+            "selected_post_ids": selected_post_ids,
+        }
+        if applied_limit is not None:
+            payload["applied_limit"] = applied_limit
+        payload["selection_truncated"] = pointers_truncated
+
+        if data_level == "full_comments":
+            payload["comment_request"] = {
+                "filters": [f.model_dump() for f in comment_filters] if comment_filters else None,
+                "sort_by": comment_sort_by,
+                "limit": comment_limit,
+            }
+
+        if include_dataset_metadata:
+            payload["metadata"] = dataset.metadata
+
+        return json.dumps(payload, ensure_ascii=False)
+
+
+class MediaAnalyzerTool(BaseTool):
+    name: str = "media_analyzer"
+    description: str = (
+        "Download visual media referenced in Reddit posts and generate an analytical description using the Gemini "
+        "multimodal API."
+    )
+    args_schema: Type[BaseModel] = MediaAnalyzerArgs
+
+    def _run(  # type: ignore[override]
+        self,
+        url: str,
+        prompt: Optional[str] = None,
+        model: str = "gemini-1.5-flash",
+        download_timeout: int = 15,
+    ) -> str:
+        try:
+            response = requests.get(url, timeout=download_timeout)
+        except requests.RequestException as exc:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "tool": self.name,
+                    "message": f"Failed to download media: {exc}",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        if response.status_code >= 400:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "tool": self.name,
+                    "message": f"Media request returned status {response.status_code}",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        content_type = response.headers.get("Content-Type", "application/octet-stream")
+        media_bytes = response.content
+
+        module_spec = importlib.util.find_spec("google.generativeai")
+        if module_spec is None:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "tool": self.name,
+                    "message": "google.generativeai is not installed in this environment.",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        genai = importlib.import_module("google.generativeai")
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return json.dumps(
+                {
+                    "status": "error",
+                    "tool": self.name,
+                    "message": "GEMINI_API_KEY environment variable is not set.",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        genai.configure(api_key=api_key)
+        default_prompt = prompt or "Provide a concise creative brief describing the visual content, notable objects, mood and any brand-relevant cues present in this media."
+
+        try:
+            model_client = genai.GenerativeModel(model)
+            generation = model_client.generate_content(
+                [
+                    default_prompt,
+                    {"mime_type": content_type, "data": media_bytes},
+                ]
+            )
+        except Exception as exc:  # pragma: no cover - external dependency
+            return json.dumps(
+                {
+                    "status": "error",
+                    "tool": self.name,
+                    "message": f"Gemini analysis failed: {exc}",
+                    "url": url,
+                },
+                ensure_ascii=False,
+            )
+
+        analysis_text: Optional[str] = None
+        if hasattr(generation, "text"):
+            analysis_text = getattr(generation, "text")
+        elif hasattr(generation, "candidates"):
+            candidates = getattr(generation, "candidates")
+            if candidates:
+                first = candidates[0]
+                if isinstance(first, Mapping) and "content" in first:
+                    analysis_text = str(first["content"])
+                elif hasattr(first, "content"):
+                    analysis_text = str(getattr(first, "content"))
+        if analysis_text is None:
+            analysis_text = str(generation)
+
+        return json.dumps(
+            {
+                "status": "success",
+                "tool": self.name,
+                "url": url,
+                "model": model,
+                "prompt": default_prompt,
+                "content_type": content_type,
+                "content_length": len(media_bytes),
+                "analysis": analysis_text,
+            },
+            ensure_ascii=False,
+        )
 
 
 reddit_scrape_locator_tool = RedditScrapeLocatorTool()
@@ -668,6 +1758,8 @@ reddit_scrape_loader_tool = RedditScrapeLoaderTool()
 reddit_dataset_filter_tool = RedditDatasetFilterTool()
 reddit_dataset_export_tool = RedditDatasetExportTool()
 reddit_dataset_lookup_tool = RedditDatasetLookupTool()
+content_explorer_tool = ContentExplorerTool()
+media_analyzer_tool = MediaAnalyzerTool()
 
 __all__ = [
     "reddit_scrape_locator_tool",
@@ -675,4 +1767,6 @@ __all__ = [
     "reddit_dataset_filter_tool",
     "reddit_dataset_export_tool",
     "reddit_dataset_lookup_tool",
+    "content_explorer_tool",
+    "media_analyzer_tool",
 ]

@@ -50,7 +50,7 @@ python scraepr_test1.py reddit <subreddit>
 - `--skip-media`：略過含媒體貼文。
 - `--include-media`：包含含媒體貼文（與前一參數互斥）。
 
-輸出檔會儲存在 `scraper.json` 內 `output_root` 指定的資料夾（預設 `scraepr/`），以日期資料夾 + 時戳檔名區分。
+輸出檔會儲存在 `scraper.json` 內 `output_root` 指定的資料夾（預設 `scraepr_outputs/`），以日期資料夾 + 時戳檔名區分。
 
 ## 其他平台（目前可能不穩定）
 以下命令目前用於介面保留，實際運行可能因環境或服務阻擋而失敗：
@@ -65,7 +65,7 @@ python scraepr_test1.py x <username>
 ```bash
 python scraepr_test1.py tests
 ```
-執行後會在 `scraepr/` 目錄下輸出測試結果與彙整檔。
+執行後會在 `scraepr_outputs/` 目錄下輸出測試結果與彙整檔。
 
 ## 設定檔 `scraper.json`
 關鍵欄位說明（節錄）：
@@ -73,7 +73,7 @@ python scraepr_test1.py tests
 - `reddit.skip_media_posts`：預設是否略過含媒體貼文。
 - `reddit.comment_depth`：留言深度。
 - `reddit.pullpush_base`：回退抓取時使用的 PullPush API 端點。
-- `output_root`：輸出資料夾根目錄（預設 `scraepr`）。
+- `output_root`：輸出資料夾根目錄（預設 `scraepr_outputs`）。
 
 ## 停用虛擬環境
 ```bash

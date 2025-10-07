@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     config = load_config(CONFIG_PATH)
-    output_root = Path(config.get("output_root", "scraepr"))
+    output_root = Path(config.get("output_root", "scraepr_outputs"))
     crew = RedditScraperCrew()
     reset_tool_execution_log()
     template = resolve_prompt(args.prompt, DEFAULT_PROMPTS)

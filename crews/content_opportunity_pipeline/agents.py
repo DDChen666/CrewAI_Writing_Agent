@@ -4,13 +4,20 @@ from __future__ import annotations
 from crewai import Agent
 from crewai.llm import LLM
 
+from ..common import ensure_gemini_rate_limit
+
 from .tools import (
+    content_explorer_tool,
+    media_analyzer_tool,
     reddit_dataset_export_tool,
     reddit_dataset_filter_tool,
     reddit_dataset_lookup_tool,
     reddit_scrape_loader_tool,
     reddit_scrape_locator_tool,
 )
+
+
+ensure_gemini_rate_limit()
 
 
 def build_data_triage_agent() -> Agent:
@@ -33,8 +40,10 @@ def build_data_triage_agent() -> Agent:
             "from noisy or irrelevant submissions. You understand how Reddit scrape JSON files "
             "are structured (platform, subreddit, items, statistics) and you always use the "
             "available tools to inspect file inventories, load posts, filter by engagement "
-            "metrics, and export a consistent payload. You never attempt to read raw JSON "
-            "directly – every transformation goes through the registered tools."
+            "metrics, and export a consistent payload. Default to concise previews when exporting; "
+            "your final hand-off should highlight the dataset_id and summary stats so later agents "
+            "can retrieve details on demand. You never attempt to read raw JSON directly – every "
+            "transformation goes through the registered tools."
         ),
         llm=llm,
         tools=[
@@ -66,11 +75,11 @@ def build_trend_analysis_agent() -> Agent:
             "You are a quantitative trend spotter specialising in emerging Reddit discourse. "
             "You excel at semantic clustering, temporal analysis and identifying early signals. "
             "Always transform observations into structured data that conforms to the "
-            "IdentifiedTrendsReport schema. Use the dataset lookup tool whenever you need "
+            "IdentifiedTrendsReport schema. Use the dataset lookup or content explorer tools whenever you need "
             "to inspect specific posts referenced by post_id."
         ),
         llm=llm,
-        tools=[reddit_dataset_lookup_tool],
+        tools=[content_explorer_tool, reddit_dataset_lookup_tool],
         allow_delegation=False,
         verbose=True,
     )
@@ -98,7 +107,7 @@ def build_brand_alignment_agent() -> Agent:
             "audience analysis before finalising scores."
         ),
         llm=llm,
-        tools=[reddit_dataset_lookup_tool],
+        tools=[content_explorer_tool, media_analyzer_tool],
         allow_delegation=False,
         verbose=True,
     )
@@ -125,7 +134,7 @@ def build_topic_curator_agent() -> Agent:
             "the PrioritizedTopicBrief schema."
         ),
         llm=llm,
-        tools=[],
+        tools=[content_explorer_tool, media_analyzer_tool],
         allow_delegation=False,
         verbose=True,
     )

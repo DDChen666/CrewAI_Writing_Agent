@@ -44,5 +44,5 @@
     "max_posts": 25,
     "request_timeout": 20
   },
-  "output_root": "scraepr"
+  "output_root": "scraepr_outputs"
 }
