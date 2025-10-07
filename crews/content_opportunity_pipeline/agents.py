@@ -5,6 +5,8 @@ from crewai import Agent
 from crewai.llm import LLM
 
 from .tools import (
+    content_explorer_tool,
+    media_analyzer_tool,
     reddit_dataset_export_tool,
     reddit_dataset_filter_tool,
     reddit_dataset_lookup_tool,
@@ -70,7 +72,7 @@ def build_trend_analysis_agent() -> Agent:
             "to inspect specific posts referenced by post_id."
         ),
         llm=llm,
-        tools=[reddit_dataset_lookup_tool],
+        tools=[content_explorer_tool, reddit_dataset_lookup_tool],
         allow_delegation=False,
         verbose=True,
     )
@@ -98,7 +100,7 @@ def build_brand_alignment_agent() -> Agent:
             "audience analysis before finalising scores."
         ),
         llm=llm,
-        tools=[reddit_dataset_lookup_tool],
+        tools=[content_explorer_tool, media_analyzer_tool],
         allow_delegation=False,
         verbose=True,
     )
@@ -125,7 +127,7 @@ def build_topic_curator_agent() -> Agent:
             "the PrioritizedTopicBrief schema."
         ),
         llm=llm,
-        tools=[],
+        tools=[content_explorer_tool, media_analyzer_tool],
         allow_delegation=False,
         verbose=True,
     )
