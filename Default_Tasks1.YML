@@ -63,21 +63,24 @@ metadata:
   description: >-
     啟動 Writing Agent，載入最新的內容機會管線輸出，根據指定平台風格改寫成準備上線的貼文。
 prompt: |
-  你是 JustKa AI 的內容改寫專家，負責把 Content Opportunity Pipeline 的結論轉化為
-  指定平台的成品文案。請依照以下流程執行：
+  你將指揮四位專家（Strategy Director、Hook Architect、Lead Conversion Writer、Editorial Guardian），
+  把 Content Opportunity Pipeline 的洞察轉化為爆文級成品，並沿用《DR_爆文生產系統性方法研究》的框架：
 
-  1. 解析指令：檢視 operator 的 rewrite 要求（若無則以 {{default_rewrite_platform}} 風格為預設）。
-  2. 熟悉背景：閱讀 `pipeline_context` 提供的趨勢報告、品牌機會與策展簡報，理解
-     選題理由、核心訊息與風險備註。
-  3. 追溯資料：如需引用 Reddit 原文，使用 `content_explorer` 搭配 `dataset_id` 抽取貼文與留言，
-     確認數據真實性與語意脈絡。
-  4. 取得風格指引：視需求呼叫 `facebook_writer`、`x_writer` 或 `thread_writer` 工具，理解平台
-     著重的語氣、結構、CTA 形式。
-  5. 完成立交付：產出符合 WritingAgentOutput schema 的 JSON，至少包含一個 rewrite 變體，
-     並列出支撐重點、引用連結與給編輯團隊的注意事項。
+  1. **策略鋪陳**：Strategy Director 需挑選最契合 '{{user_request}}' 的 brief，萃取受眾痛點、品牌承諾與資料佐證，
+     並明確標記 STEPPS 與資訊差、FOMO、預期心理、社會認同等進階心理觸發器的運用方式。
+  2. **Hook 設計**：Hook Architect 將藍圖轉譯成多平台可用的 Hook 與敘事節奏，預設至少涵蓋 {{default_rewrite_platform}} 與一個次要平台，
+     每個 Hook 都需說明觸發器堆疊與引用的資料洞察，必要時呼叫 `facebook_writer`、`x_writer`、`thread_writer` 取得語氣指引。
+  3. **成品撰寫**：Lead Conversion Writer 依策略撰寫符合 WritingAgentOutput schema 的成品。每個 rewrite 必須：
+     - 延續策略藍圖的故事弧；
+     - 在 supporting_points 中標示數據或留言證據；
+     - 在 references 中提供 dataset_id + post_id 或 permalink；
+     - 在 editorial_notes 中列出假設、風險、建議 KPI 或後續行動。
+  4. **品質保證**：Editorial Guardian 最終審查並補上 quality_review，確認觸發器確實落地、語氣符合「更智慧、更省力、更美好」，
+     且所有引用可追溯。
 
-  請主動列出假設與風險（例如資料時效、需二次審稿的敏感措辭），確保文本符合 JustKa AI
-  的品牌語調「更智慧、更省力、更美好」。
+  避免貼上冗長原始 JSON；僅在需要時用工具抓取重點並以摘要呈現。最終輸出務必是符合 WritingAgentOutput 的 JSON，
+  並帶有 strategic_blueprint、hook_concepts、quality_review 欄位供後續追溯。若 operator 未指定平台，優先完成 {{default_rewrite_platform}}，
+  但可視策略補寫其他高潛力通路。
 
 ---
 agent: reddit_scraper
@@ -176,10 +179,12 @@ metadata:
   description: >-
     先看 brief 再下筆，缺料就用 post_id 補。
 prompt: |
-  重點：只讀 `prioritized_topic_briefs` + `scored_and_filtered_opportunities`。
-  先挑 1 個 brief，從 reference_links 選 2-3 個 post_id，用 content_explorer(normalized)抓素材。
-  依 {{default_rewrite_platform}} 風格寫一版，附 CTA、supporting_points、references（用 permalink）。
-  用 WritingAgentOutput JSON 返回。
+  Focus 模式：只使用 `prioritized_topic_briefs` 與 `scored_and_filtered_opportunities` 內的資料。
+  讓 Strategy Director 鎖定 1 個最有價值的 brief，必要時用 content_explorer(normalized) 從 reference_links 中抓 2-3 個 post_id 核實證據。
+  Hook Architect 需針對 {{default_rewrite_platform}} 提供至少兩個 HookConcept，說明觸發器堆疊與資料佐證。
+  Lead Conversion Writer 只需完成 {{default_rewrite_platform}} 平台的 rewrite，但仍須保留 strategic_blueprint、hook_concepts。
+  Editorial Guardian 應在 quality_review 中紀錄任何未覆蓋的資料缺口或待補素材。
+  最終以 WritingAgentOutput JSON 輸出，含 CTA、supporting_points、references（優先 permalink 或 dataset_id+post_id）、editorial_notes。
 
 ---
 agent: writing_agent
@@ -193,10 +198,12 @@ metadata:
   description: >-
     先出 X 線程，再給 FB 短稿，一次兩版。
 prompt: |
-  選 1 個 brief：
-  - 從 reference_links 抽 2 個 post_id，用 content_explorer(normalized) 驗證與摘錄。
-  - 先寫 X 線程（開場1句＋3-5點），再寫 FB 版短稿（1段＋CTA）。
-  - 每版都附 references 與 editorial_notes。用 WritingAgentOutput JSON 返回。
+  選定 1 個 brief 後：
+  - Strategy Director 確保故事骨幹能同時支援 X 線程與 Facebook 短稿，必要時補抓原始留言或數據。
+  - Hook Architect 為兩個平台分別設計 HookConcept：X 線程須有開場鉤子＋3-5 條節奏；Facebook 短稿須有單段敘事＋CTA。
+  - Lead Conversion Writer 產出兩個 rewrite 變體：第一個為 X thread（首句＋條列）、第二個為 Facebook 貼文（短段＋CTA）。
+  - Editorial Guardian 需確認每個平台都啟用至少兩種心理觸發器（例如 情緒 + 實用價值）並於 quality_review 註記。
+  返回符合 WritingAgentOutput 的 JSON，為每個變體提供 supporting_points、references、editorial_notes。
 
 ---
 agent: writing_agent
@@ -210,7 +217,9 @@ metadata:
   description: >-
     低 token 單題單平台：穩、準、可追溯。
 prompt: |
-  低 Token 模式：只處理 1 個 brief、只輸出 1 個平台（{{default_rewrite_platform}}）。
-  不先塞大段上下文；需要引用才用 post_id + content_explorer(normalized) 抓原文。
-  產出正文＋CTA，附 supporting_points、references（permalink 或 post_id）、editorial_notes（含風險假設）。
-  嚴格用 WritingAgentOutput JSON 返回。
+  低 Token 模式：
+  - Strategy Director 以極簡字數描述受眾張力、品牌承諾與必備證據（最多 3 條 supporting data）。
+  - Hook Architect 僅提交 1 個精煉 HookConcept，聚焦 {{default_rewrite_platform}}，並註明使用的關鍵觸發器。
+  - Lead Conversion Writer 只輸出 {{default_rewrite_platform}} 單一 rewrite（正文＋CTA），確保 supporting_points、references、editorial_notes 精簡但可追溯。
+  - Editorial Guardian 在 quality_review 中列出合規檢查與任何需要人審的紅旗。
+  禁止貼上大段原文；如需引用請以 paraphrase + permalink/post_id 呈現。最終以 WritingAgentOutput JSON 返回。
