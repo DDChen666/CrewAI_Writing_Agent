@@ -6,17 +6,35 @@ from typing import Any, Dict, Optional
 
 from crewai import Crew
 
-from .agents import build_writing_agent
-from .tasks import build_writing_task
+from .agents import build_writing_team
+from .tasks import (
+    build_hook_task,
+    build_quality_task,
+    build_strategy_task,
+    build_writing_task,
+)
 
 
 class WritingAgentCrew:
     """High-level orchestrator that generates platform-ready rewrites."""
 
     def __init__(self) -> None:
-        agent = build_writing_agent()
-        task = build_writing_task(agent)
-        self.crew = Crew(agents=[agent], tasks=[task], verbose=True)
+        team = build_writing_team()
+        strategy_task = build_strategy_task(team["editor_in_chief"])
+        hook_task = build_hook_task(team["hook_architect"], strategy_task)
+        writing_task = build_writing_task(
+            team["master_writer"], strategy_task, hook_task
+        )
+        quality_task = build_quality_task(
+            team["editorial_guardian"], strategy_task, hook_task, writing_task
+        )
+
+        self.crew = Crew(
+            agents=list(team.values()),
+            tasks=[strategy_task, hook_task, writing_task, quality_task],
+            verbose=True,
+        )
+        self.final_task = quality_task
 
     def _condense_context(self, pipeline_context: Dict[str, Any]) -> str:
         """Return a compact JSON string with only the essentials for prompting.
