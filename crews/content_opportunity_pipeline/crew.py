@@ -149,9 +149,10 @@ class ContentOpportunityPipelineCrew:
     ) -> Any:
         """Execute the pipeline with the supplied inputs."""
 
-        inputs = {"user_request": user_request}
-        if brand_knowledge_base is not None:
-            inputs["brand_knowledge_base"] = brand_knowledge_base
+        inputs = {
+            "user_request": user_request,
+            "brand_knowledge_base": brand_knowledge_base or "",
+        }
         result = self.crew.kickoff(inputs=inputs)
 
         enriched_payload = _build_pipeline_payload(result)

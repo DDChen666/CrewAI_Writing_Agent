@@ -11,7 +11,9 @@ def build_strategy_task(agent) -> Task:
 
     return Task(
         description=(
-            "研讀 '{{pipeline_context}}' 中的 prioritized_topic_briefs 與 scored_and_filtered_opportunities，"  # noqa: E501
+            "先檢查 '{{pipeline_context}}' 是否提供 dataset_id、prioritized_topic_briefs 與實際可用的 briefs；"  # noqa: E501
+            "若清單為空或無法對應 '{{user_request}}' 的指示，必須在輸出中誠實記錄資料缺口與下一步建議，"  # noqa: E501
+            "不得臆測或捏造洞察。當資料有效時，研讀 '{{pipeline_context}}' 中的 prioritized_topic_brief 與 scored_and_filtered_opportunities，"  # noqa: E501
             "挑選最符合 '{{user_request}}' 指示的單一 brief。建立一份 Strategic Blueprint："  # noqa: E501
             "闡述目標受眾的痛點、品牌承諾、核心故事骨幹，以及你會啟用的 STEPPS 與進階心理觸發器（資訊差、FOMO、預期心理、社會認同等）。"  # noqa: E501
             "引用 dataset_id 可追溯的證據，必要時呼叫 content_explorer_tool 取得貼文或留言原文。"  # noqa: E501

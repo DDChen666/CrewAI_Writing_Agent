@@ -23,6 +23,7 @@ from crews.content_opportunity_pipeline import ContentOpportunityPipelineCrew
 
 
 CONFIG_PATH = Path(__file__).with_name("content_pipeline_config.json")
+DEFAULT_BRAND_KB_FILENAME = "Brand_Core_Knowledge_Base_for_justka.ai.yml"
 DEFAULT_PROMPTS = {
     "1": {
         "path": Path(__file__).with_name("Default_Tasks1.YML"),
@@ -232,6 +233,33 @@ def _should_use_offline_mode() -> bool:
     return False
 
 
+def _resolve_brand_knowledge_base(
+    *,
+    cli_value: Optional[str],
+    config: Dict[str, Any],
+    template_scalars: Dict[str, Optional[str]],
+) -> Optional[str]:
+    """Return the brand knowledge base content, falling back to the project default."""
+
+    base_dir = Path(__file__).resolve().parent
+    kb_path = _determine_brand_kb_path(cli_value, config, template_scalars)
+    if kb_path is not None:
+        resolved_path = kb_path if kb_path.is_absolute() else base_dir / kb_path
+        if not resolved_path.exists():
+            print(f"Brand knowledge base not found: {resolved_path}", file=sys.stderr)
+            sys.exit(1)
+        return _load_brand_knowledge_base(resolved_path)
+
+    default_path = base_dir / DEFAULT_BRAND_KB_FILENAME
+    if default_path.exists():
+        try:
+            return _load_brand_knowledge_base(default_path)
+        except RuntimeError:
+            # Surface errors for explicit paths, but allow fallback to continue silently.
+            pass
+    return None
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(CONFIG_PATH)
@@ -240,15 +268,11 @@ def main() -> None:
     template = resolve_prompt(args.prompt, DEFAULT_PROMPTS)
     prompt = template.prompt
 
-    kb_path = _determine_brand_kb_path(args.brand_knowledge_base, config, template.scalars)
-    brand_knowledge_base: Optional[str] = None
-    if kb_path is not None:
-        base_dir = Path(__file__).resolve().parent
-        resolved_path = kb_path if kb_path.is_absolute() else base_dir / kb_path
-        if not resolved_path.exists():
-            print(f"Brand knowledge base not found: {resolved_path}", file=sys.stderr)
-            sys.exit(1)
-        brand_knowledge_base = _load_brand_knowledge_base(resolved_path)
+    brand_knowledge_base = _resolve_brand_knowledge_base(
+        cli_value=args.brand_knowledge_base,
+        config=config,
+        template_scalars=template.scalars,
+    )
 
     if _should_use_offline_mode():
         print(

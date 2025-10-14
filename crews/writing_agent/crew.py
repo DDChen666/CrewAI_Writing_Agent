@@ -56,7 +56,7 @@ class WritingAgentCrew:
                 opps.append({"topic": topic, "reason_for_selection": reason})
 
             briefs = []
-            for brief in (pipeline_context.get("prioritized_topic_briefs") or [])[:5]:
+            for brief in (pipeline_context.get("prioritized_topic_brief") or [])[:5]:
                 refs = brief.get("reference_links") or []
                 angles = brief.get("editorial_angles") or []
                 # Truncate angles for brevity
@@ -76,7 +76,7 @@ class WritingAgentCrew:
                 "source_file": source_file,
                 "dataset_id": dataset_id,
                 "scored_and_filtered_opportunities": {"opportunities": opps},
-                "prioritized_topic_briefs": briefs,
+                "prioritized_topic_brief": briefs,
             }
             return json.dumps(compact, ensure_ascii=False)
         except Exception:
