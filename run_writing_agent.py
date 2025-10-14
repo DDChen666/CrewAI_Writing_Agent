@@ -238,6 +238,8 @@ _TOPIC_BRIEF_LIST_KEYS = [
     "prioritized_topic_briefs",
     "prioritized_briefs",
     "brief_list",
+    "prioritized_topics",
+    "topics",
 ]
 
 
@@ -343,6 +345,17 @@ def _load_pipeline_context(pipeline_file: Path) -> Tuple[Dict[str, Any], Dict[st
     if scored_payload is None:
         scored_payload = {"opportunities": []}
     else:
+        if "opportunities" not in scored_payload:
+            fallback_opportunities = _get_value_from_candidates(
+                scored_payload,
+                ["scored_opportunities", "filtered_opportunities", "opportunities"],
+            )
+            if isinstance(fallback_opportunities, list):
+                scored_payload["opportunities"] = list(fallback_opportunities)
+            elif _is_non_empty(fallback_opportunities):
+                scored_payload["opportunities"] = [fallback_opportunities]
+            else:
+                scored_payload["opportunities"] = []
         opportunities_value = scored_payload.get("opportunities")
         if isinstance(opportunities_value, list):
             scored_payload["opportunities"] = list(opportunities_value)
@@ -355,7 +368,17 @@ def _load_pipeline_context(pipeline_file: Path) -> Tuple[Dict[str, Any], Dict[st
         if not _is_non_empty(scored_payload.get("originating_report_id")) and dataset_id:
             scored_payload["originating_report_id"] = dataset_id
 
+    topic_briefs_notes: Optional[Any] = None
     topic_briefs_source = _get_value_from_candidates(payload, _TOPIC_BRIEF_KEYS)
+    if isinstance(topic_briefs_source, dict):
+        topic_briefs_notes = _get_value_from_candidates(
+            topic_briefs_source,
+            [
+                "selected_opportunities_rationale",
+                "selection_rationale",
+                "summary",
+            ],
+        )
     topic_briefs = _normalize_topic_briefs(topic_briefs_source) or []
     if not topic_briefs and isinstance(topic_curator, dict):
         curated_value = _get_value_from_candidates(topic_curator, _TOPIC_BRIEF_KEYS)
@@ -364,17 +387,33 @@ def _load_pipeline_context(pipeline_file: Path) -> Tuple[Dict[str, Any], Dict[st
             or _normalize_topic_briefs(topic_curator)
             or topic_briefs
         )
+        if topic_briefs_notes is None and isinstance(topic_curator, dict):
+            topic_briefs_notes = _get_value_from_candidates(
+                topic_curator,
+                [
+                    "selected_opportunities_rationale",
+                    "selection_rationale",
+                    "summary",
+                ],
+            )
     if not topic_briefs and isinstance(brand_alignment, dict):
         brand_value = _get_value_from_candidates(brand_alignment, _TOPIC_BRIEF_KEYS)
         topic_briefs = _normalize_topic_briefs(brand_value) or topic_briefs
     if not topic_briefs:
         topic_briefs = []
 
+    if topic_briefs_notes is not None and not isinstance(topic_briefs_notes, str):
+        try:
+            topic_briefs_notes = json.dumps(topic_briefs_notes, ensure_ascii=False)
+        except (TypeError, ValueError):
+            topic_briefs_notes = str(topic_briefs_notes)
+
     context: Dict[str, Any] = {
         "source_file": str(pipeline_file.as_posix()),
         "dataset_id": dataset_id,
         "scored_and_filtered_opportunities": scored_payload,
         "prioritized_topic_briefs": topic_briefs,
+        "prioritized_topic_briefs_notes": topic_briefs_notes,
         "token_usage": payload.get("token_usage"),
     }
 
