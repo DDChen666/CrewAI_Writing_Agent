@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 from crewai import Crew
 
+from cli_common import DirectiveBlock
+
 from .agents import build_writing_team
 from .tasks import (
     build_hook_task,
@@ -19,22 +21,76 @@ class WritingAgentCrew:
     """High-level orchestrator that generates platform-ready rewrites."""
 
     def __init__(self) -> None:
+        self.crew: Optional[Crew] = None
+        self.final_task = None
+
+    @staticmethod
+    def _safe_block(
+        directives: Optional[Dict[str, DirectiveBlock]],
+        key: str,
+    ) -> DirectiveBlock:
+        if directives is None:
+            return DirectiveBlock(instructions="", parameters={})
+        block = directives.get(key)
+        if block is None:
+            return DirectiveBlock(instructions="", parameters={})
+        return DirectiveBlock(instructions=block.instructions, parameters=dict(block.parameters))
+
+    def _build_crew(self, directives: Optional[Dict[str, DirectiveBlock]]) -> Crew:
+        global_block = self._safe_block(directives, "global")
+
+        def _merge(block: DirectiveBlock) -> DirectiveBlock:
+            instructions_parts = [global_block.instructions.strip(), block.instructions.strip()]
+            merged_instructions = "\n\n".join(
+                part for part in instructions_parts if part
+            ).strip()
+            merged_parameters = dict(global_block.parameters)
+            merged_parameters.update(block.parameters)
+            return DirectiveBlock(
+                instructions=merged_instructions,
+                parameters=merged_parameters,
+            )
+
+        strategy_block = _merge(self._safe_block(directives, "strategy"))
+        hook_block = _merge(self._safe_block(directives, "hook"))
+        writing_block = _merge(self._safe_block(directives, "writing"))
+        quality_block = _merge(self._safe_block(directives, "quality"))
+
         team = build_writing_team()
-        strategy_task = build_strategy_task(team["editor_in_chief"])
-        hook_task = build_hook_task(team["hook_architect"], strategy_task)
+        strategy_task = build_strategy_task(
+            team["editor_in_chief"],
+            instructions=strategy_block.instructions,
+            parameters=strategy_block.parameters,
+        )
+        hook_task = build_hook_task(
+            team["hook_architect"],
+            strategy_task,
+            instructions=hook_block.instructions,
+            parameters=hook_block.parameters,
+        )
         writing_task = build_writing_task(
-            team["master_writer"], strategy_task, hook_task
+            team["master_writer"],
+            strategy_task,
+            hook_task,
+            instructions=writing_block.instructions,
+            parameters=writing_block.parameters,
         )
         quality_task = build_quality_task(
-            team["editorial_guardian"], strategy_task, hook_task, writing_task
+            team["editorial_guardian"],
+            strategy_task,
+            hook_task,
+            writing_task,
+            instructions=quality_block.instructions,
+            parameters=quality_block.parameters,
         )
 
-        self.crew = Crew(
+        crew = Crew(
             agents=list(team.values()),
             tasks=[strategy_task, hook_task, writing_task, quality_task],
             verbose=True,
         )
         self.final_task = quality_task
+        return crew
 
     def _condense_context(self, pipeline_context: Dict[str, Any]) -> str:
         """Return a compact JSON string with only the essentials for prompting.
@@ -204,10 +260,15 @@ class WritingAgentCrew:
         brand_alignment_raw: Optional[str] = None,
         topic_curator_raw: Optional[str] = None,
         dataset_id: Optional[str] = None,
+        directives: Optional[Dict[str, DirectiveBlock]] = None,
     ) -> Any:
         """Execute the crew with the supplied rewrite instructions and context."""
 
         self._validate_pipeline_context(pipeline_context)
+
+        crew = self._build_crew(directives)
+        self.crew = crew
+        global_block = self._safe_block(directives, "global")
 
         # Build a condensed prompt context to reduce input token load
         context_json = self._condense_context(pipeline_context)
@@ -220,8 +281,9 @@ class WritingAgentCrew:
             "brand_alignment_raw": "",
             "topic_curator_raw": "",
             "dataset_id": dataset_id or "",
+            "global_operator_notes": global_block.instructions,
         }
-        return self.crew.kickoff(inputs=inputs)
+        return crew.kickoff(inputs=inputs)
 
 
 __all__ = ["WritingAgentCrew"]

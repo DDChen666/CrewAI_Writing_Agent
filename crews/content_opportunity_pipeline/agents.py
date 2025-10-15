@@ -20,31 +20,30 @@ from .tools import (
 ensure_gemini_rate_limit()
 
 
-def build_data_triage_agent() -> Agent:
-    """Create the Data Triage Agent responsible for Reddit data selection."""
+def build_data_triage_manager_agent() -> Agent:
+    """Create the Data Triage Manager responsible for Reddit dataset orchestration."""
 
     llm = LLM(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-flash-latest",
         temperature=0.1,
     )
 
     return Agent(
-        role="Data Triage Agent",
+        role="Data Triage Manager",
         goal=(
-            "Quickly interpret operator prompts, locate the correct raw Reddit scrape files, "
-            "and emit a normalised, de-duplicated Cleaned_Content_Stream focused on the "
-            "metrics the operator cares about while preserving dataset_id traceability."
+            "Coordinate Reddit dataset preparation while keeping managerial reasoning free from raw content. "
+            "Interpret operator directives, drive locator/loader/export tooling, persist clean datasets and design "
+            "scoped preview missions for downstream analysts."
         ),
         backstory=(
-            "You are the pipeline's first responder. Your job is to shield downstream analysts "
-            "from noisy or irrelevant submissions. You understand how Reddit scrape JSON files "
-            "are structured (platform, subreddit, items, statistics) and you always use the "
-            "available tools to inspect inventories, load posts, filter by engagement metrics, "
-            "and export a consistent payload. Default to concise previews when exporting; your "
-            "final hand-off must highlight dataset_id, timeframe and summary stats so later agents "
-            "can retrieve details on demand. When data is missing or malformed, document the gap "
-            "instead of guessing. You never attempt to read raw JSON directly – every transformation "
-            "goes through the registered tools."
+            "You are the pipeline's operations lead. You understand Reddit scrape inventories, apply filters exactly as requested, "
+            "and always persist outputs via reddit_dataset_export_tool, treating the returned dataset_id as the canonical reference. "
+            "Before every tool call you cross-check parameter formats: split any glob such as 'scraper_outputs/20251015/*.json' into "
+            "base_dir='scraper_outputs' and date_prefixes=['20251015'], validate files exist via locator, and only proceed to loader/export "
+            "when the previous step succeeded. You never inspect raw post bodies or call content_explorer directly; instead you craft tightly "
+            "bounded preview briefs for specialist analysts, explicitly dictating conservative `fields` selections so lookup results stay lean. "
+            "When a step fails, you stop, record the failure state and avoid repeating invalid calls. Document gaps when data is missing and keep "
+            "hand-offs concise so later agents retain full traceability."
         ),
         llm=llm,
         tools=[
@@ -58,11 +57,37 @@ def build_data_triage_agent() -> Agent:
     )
 
 
+def build_content_previewer_agent() -> Agent:
+    """Create the Content Previewer Agent that inspects scoped Reddit samples."""
+
+    llm = LLM(
+        model="gemini/gemini-flash-lite-latest",
+        temperature=0.0,
+    )
+
+    return Agent(
+        role="Content Previewer",
+        goal=(
+            "Execute tightly scoped preview missions against persisted Reddit datasets, surfacing high-signal statistics "
+            "and qualitative clues without exceeding sampling limits or introducing token bloat. Respect lookup `fields` directives so returned payloads stay minimal."
+        ),
+        backstory=(
+            "You are a single-mission analyst. The Data Triage Manager hands you a dataset_id and a precise sampling brief. "
+            "You only use the approved lookup tools with conservative pagination limits and explicit field selections, summarise discoveries succinctly, "
+            "and report any constraints instead of over-fetching. After delivering your preview, your assignment ends."
+        ),
+        llm=llm,
+        tools=[content_explorer_tool, reddit_dataset_lookup_tool],
+        allow_delegation=False,
+        verbose=True,
+    )
+
+
 def build_trend_analysis_agent() -> Agent:
     """Create the Trend Analysis Agent responsible for clustering and momentum scoring."""
 
     llm = LLM(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-flash-latest",
         temperature=0.2,
     )
 
@@ -79,7 +104,8 @@ def build_trend_analysis_agent() -> Agent:
             "Always transform observations into structured data that conforms to the IdentifiedTrendsReport "
             "schema. Call out confidence levels when sample sizes are thin or sentiment is mixed. Use the "
             "dataset lookup or content explorer tools whenever you need to inspect specific posts referenced "
-            "by post_id, and prefer evidence-backed claims over speculation."
+            "by post_id, always constraining lookup calls with explicit `fields` selections (defaulting to minimal outputs) to avoid unnecessary context, "
+            "and prefer evidence-backed claims over speculation."
         ),
         llm=llm,
         tools=[content_explorer_tool, reddit_dataset_lookup_tool],
@@ -92,7 +118,7 @@ def build_brand_alignment_agent() -> Agent:
     """Create the Brand Alignment Agent responsible for scoring opportunities."""
 
     llm = LLM(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-flash-latest",
         temperature=0.15,
     )
 
@@ -122,7 +148,7 @@ def build_topic_curator_agent() -> Agent:
     """Create the Topic Curator Agent that packages final production briefs."""
 
     llm = LLM(
-        model="gemini/gemini-2.5-flash",
+        model="gemini/gemini-flash-latest",
         temperature=0.45,
     )
 
@@ -144,3 +170,12 @@ def build_topic_curator_agent() -> Agent:
         allow_delegation=False,
         verbose=True,
     )
+
+
+__all__ = [
+    "build_data_triage_manager_agent",
+    "build_content_previewer_agent",
+    "build_trend_analysis_agent",
+    "build_brand_alignment_agent",
+    "build_topic_curator_agent",
+]

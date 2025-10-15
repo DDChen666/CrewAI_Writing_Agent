@@ -6,15 +6,20 @@ from typing import Any, Dict, Optional
 
 from crewai import Crew
 
+from cli_common import DirectiveBlock
+
 from .agents import (
     build_brand_alignment_agent,
-    build_data_triage_agent,
+    build_content_previewer_agent,
+    build_data_triage_manager_agent,
     build_topic_curator_agent,
     build_trend_analysis_agent,
 )
 from .tasks import (
     build_brand_alignment_task,
-    build_data_triage_task,
+    build_content_preview_task,
+    build_data_triage_plan_task,
+    build_data_triage_summary_task,
     build_topic_curator_task,
     build_trend_analysis_task,
 )
@@ -115,45 +120,120 @@ class ContentOpportunityPipelineCrew:
     """High-level orchestrator that runs the content opportunity workflow."""
 
     def __init__(self) -> None:
-        data_triage_agent = build_data_triage_agent()
+        self.crew: Optional[Crew] = None
+
+    @staticmethod
+    def _safe_block(directives: Optional[Dict[str, DirectiveBlock]], key: str) -> DirectiveBlock:
+        if directives is None:
+            return DirectiveBlock(instructions="", parameters={})
+        block = directives.get(key)
+        if block is None:
+            return DirectiveBlock(instructions="", parameters={})
+        return DirectiveBlock(instructions=block.instructions, parameters=dict(block.parameters))
+
+    def _build_crew(self, directives: Optional[Dict[str, DirectiveBlock]]) -> Crew:
+        global_block = self._safe_block(directives, "global")
+
+        def _merge(block: DirectiveBlock) -> DirectiveBlock:
+            instructions_parts = [global_block.instructions.strip(), block.instructions.strip()]
+            merged_instructions = "\n\n".join(
+                part for part in instructions_parts if part
+            ).strip()
+            merged_parameters = dict(global_block.parameters)
+            merged_parameters.update(block.parameters)
+            return DirectiveBlock(
+                instructions=merged_instructions,
+                parameters=merged_parameters,
+            )
+
+        data_triage_block = _merge(self._safe_block(directives, "data_triage"))
+        trend_block = _merge(self._safe_block(directives, "trend_analysis"))
+        alignment_block = _merge(self._safe_block(directives, "brand_alignment"))
+        curator_block = _merge(self._safe_block(directives, "topic_curator"))
+
+        data_triage_manager_agent = build_data_triage_manager_agent()
+        content_previewer_agent = build_content_previewer_agent()
         trend_analysis_agent = build_trend_analysis_agent()
         brand_alignment_agent = build_brand_alignment_agent()
         topic_curator_agent = build_topic_curator_agent()
 
-        data_triage_task = build_data_triage_task(data_triage_agent)
-        trend_analysis_task = build_trend_analysis_task(trend_analysis_agent, data_triage_task)
-        brand_alignment_task = build_brand_alignment_task(brand_alignment_agent, trend_analysis_task)
-        topic_curator_task = build_topic_curator_task(topic_curator_agent, brand_alignment_task)
+        data_triage_plan_task = build_data_triage_plan_task(
+            data_triage_manager_agent,
+            instructions=data_triage_block.instructions,
+            parameters=data_triage_block.parameters,
+        )
+        content_preview_task = build_content_preview_task(
+            content_previewer_agent,
+            data_triage_plan_task,
+            instructions=data_triage_block.instructions,
+            parameters=data_triage_block.parameters,
+        )
+        data_triage_summary_task = build_data_triage_summary_task(
+            data_triage_manager_agent,
+            data_triage_plan_task,
+            content_preview_task,
+            instructions=data_triage_block.instructions,
+            parameters=data_triage_block.parameters,
+        )
+        trend_analysis_task = build_trend_analysis_task(
+            trend_analysis_agent,
+            data_triage_summary_task,
+            instructions=trend_block.instructions,
+            parameters=trend_block.parameters,
+        )
+        brand_alignment_task = build_brand_alignment_task(
+            brand_alignment_agent,
+            trend_analysis_task,
+            instructions=alignment_block.instructions,
+            parameters=alignment_block.parameters,
+        )
+        topic_curator_task = build_topic_curator_task(
+            topic_curator_agent,
+            brand_alignment_task,
+            instructions=curator_block.instructions,
+            parameters=curator_block.parameters,
+        )
 
-        self.crew = Crew(
+        crew = Crew(
             agents=[
-                data_triage_agent,
+                data_triage_manager_agent,
+                content_previewer_agent,
                 trend_analysis_agent,
                 brand_alignment_agent,
                 topic_curator_agent,
             ],
             tasks=[
-                data_triage_task,
+                data_triage_plan_task,
+                content_preview_task,
+                data_triage_summary_task,
                 trend_analysis_task,
                 brand_alignment_task,
                 topic_curator_task,
             ],
             verbose=True,
         )
+        return crew
 
     def run(
         self,
         *,
         user_request: str,
         brand_knowledge_base: str | None = None,
+        directives: Optional[Dict[str, DirectiveBlock]] = None,
     ) -> Any:
         """Execute the pipeline with the supplied inputs."""
+
+        crew = self._build_crew(directives)
+        self.crew = crew
+
+        global_block = self._safe_block(directives, "global")
 
         inputs = {
             "user_request": user_request,
             "brand_knowledge_base": brand_knowledge_base or "",
+            "global_operator_notes": global_block.instructions,
         }
-        result = self.crew.kickoff(inputs=inputs)
+        result = crew.kickoff(inputs=inputs)
 
         enriched_payload = _build_pipeline_payload(result)
         return enriched_payload if enriched_payload is not None else result

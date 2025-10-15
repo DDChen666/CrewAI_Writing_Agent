@@ -7,13 +7,21 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 os.environ.setdefault("CREWAI_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 os.environ.setdefault("OTEL_SDK_DISABLED", "true")
 
-from cli_common import load_config, persist_result_if_json, resolve_prompt, serialize_result
+from cli_common import (
+    coerce_json_payload,
+    DirectiveBlock,
+    load_config,
+    parse_prompt_directives,
+    persist_result_if_json,
+    resolve_prompt,
+    serialize_result,
+)
 from crews.writing_agent import WritingAgentCrew
 
 
@@ -45,6 +53,13 @@ DEFAULT_PROMPTS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the Writing Agent crew")
     parser.add_argument("prompt", help="Rewrite instructions for the Writing Agent")
+    parser.add_argument(
+        "--skip-raw-export",
+        dest="export_raw_articles",
+        action="store_false",
+        help="Skip exporting platform articles from the raw JSON payload to text files",
+    )
+    parser.set_defaults(export_raw_articles=True)
     return parser.parse_args()
 
 
@@ -194,6 +209,102 @@ def _parse_json_blob(blob: Optional[str]) -> Optional[Any]:
             return None
 
     return None
+
+
+def _sanitize_filename_component(value: str) -> str:
+    sanitized = re.sub(r"[^A-Za-z0-9_\-]+", "_", value.strip())
+    sanitized = sanitized.strip("_")
+    return sanitized or "article"
+
+
+def _format_value_lines(value: Any, indent: int = 0) -> List[str]:
+    indent_str = "    " * indent
+    if isinstance(value, str):
+        if not value:
+            return [indent_str] if indent else [""]
+        lines: List[str] = []
+        for raw_line in value.splitlines():
+            prefix = indent_str if indent else ""
+            lines.append(f"{prefix}{raw_line}")
+        if value.endswith("\n"):
+            lines.append(indent_str if indent else "")
+        return lines or ([indent_str] if indent else [""])
+    if value is None:
+        return [f"{indent_str}null"]
+    if isinstance(value, bool):
+        return [f"{indent_str}{str(value).lower()}"]
+    if isinstance(value, (int, float)):
+        return [f"{indent_str}{value}"]
+    if isinstance(value, list):
+        lines: List[str] = []
+        for item in value:
+            if isinstance(item, (dict, list)):
+                lines.append(f"{indent_str}-")
+                lines.extend(_format_value_lines(item, indent + 1))
+            else:
+                item_str = item if isinstance(item, str) else json.dumps(item, ensure_ascii=False)
+                if isinstance(item, str) and "\n" in item:
+                    split_lines = item.splitlines()
+                    lines.append(f"{indent_str}- {split_lines[0]}")
+                    for continuation in split_lines[1:]:
+                        lines.append(f"{indent_str}  {continuation}")
+                else:
+                    lines.append(f"{indent_str}- {item_str}")
+        return lines
+    if isinstance(value, dict):
+        lines: List[str] = []
+        for key, nested in value.items():
+            lines.append(f"{indent_str}{key}:")
+            lines.extend(_format_value_lines(nested, indent + 1))
+        return lines
+    return [f"{indent_str}{json.dumps(value, ensure_ascii=False)}"]
+
+
+def _article_payload_to_text(article: Any) -> str:
+    if isinstance(article, str):
+        return article.strip() + ("\n" if not article.endswith("\n") else "")
+    if isinstance(article, dict):
+        lines: List[str] = []
+        for key, value in article.items():
+            lines.append(f"{key}:")
+            lines.extend(_format_value_lines(value, indent=1))
+            lines.append("")
+        while lines and lines[-1] == "":
+            lines.pop()
+        return ("\n".join(lines)).rstrip() + "\n"
+    if isinstance(article, list):
+        lines = _format_value_lines(article, indent=0)
+        return ("\n".join(lines)).rstrip() + "\n"
+    return json.dumps(article, ensure_ascii=False, indent=2) + "\n"
+
+
+def _export_articles_from_raw(raw_value: Any, output_path: Path) -> List[Path]:
+    if not isinstance(raw_value, str):
+        return []
+
+    parsed = _parse_json_blob(raw_value)
+    if not isinstance(parsed, dict):
+        return []
+
+    target_dir = output_path.with_suffix("")
+    articles_written: List[Path] = []
+
+    for section_name, entries in parsed.items():
+        if not isinstance(entries, list):
+            continue
+        safe_section = _sanitize_filename_component(section_name)
+        for index, entry in enumerate(entries, start=1):
+            if not isinstance(entry, (dict, list, str)):
+                continue
+            article_text = _article_payload_to_text(entry)
+            if not article_text.strip():
+                continue
+            filename = f"{safe_section}_{index:02d}.txt"
+            article_path = target_dir / filename
+            article_path.parent.mkdir(parents=True, exist_ok=True)
+            article_path.write_text(article_text, encoding="utf-8")
+            articles_written.append(article_path)
+    return articles_written
 
 
 def _find_latest_output(root: Path, pattern: str) -> Optional[Path]:
@@ -428,10 +539,22 @@ def _load_pipeline_context(pipeline_file: Path) -> Tuple[Dict[str, Any], Dict[st
     return context, agent_payloads
 
 
-def _resolve_pipeline_file(template_scalars: Dict[str, Any]) -> Path:
+def _resolve_pipeline_file(
+    template_scalars: Dict[str, Any],
+    directive_block: Optional[DirectiveBlock],
+) -> Path:
     base_dir = Path(__file__).resolve().parent
 
     pipeline_path_value = template_scalars.get("pipeline_output_path")
+    if directive_block:
+        override_path = (
+            directive_block.parameters.get("pipeline_output_path")
+            or directive_block.parameters.get("pipeline_file")
+            or directive_block.parameters.get("pipeline_path")
+        )
+        if isinstance(override_path, str) and override_path.strip():
+            pipeline_path_value = override_path.strip()
+
     if pipeline_path_value:
         pipeline_path = Path(pipeline_path_value)
         if not pipeline_path.is_absolute():
@@ -441,10 +564,18 @@ def _resolve_pipeline_file(template_scalars: Dict[str, Any]) -> Path:
         return pipeline_path
 
     root_value = template_scalars.get("pipeline_output_root", "content_pipeline_outputs")
+    if directive_block:
+        override_root = directive_block.parameters.get("pipeline_output_root") or directive_block.parameters.get("pipeline_root")
+        if isinstance(override_root, str) and override_root.strip():
+            root_value = override_root.strip()
     pattern_value = template_scalars.get(
         "pipeline_output_pattern",
         "*_content_opportunity_pipeline.json",
     )
+    if directive_block:
+        override_pattern = directive_block.parameters.get("pipeline_output_pattern") or directive_block.parameters.get("pipeline_pattern")
+        if isinstance(override_pattern, str) and override_pattern.strip():
+            pattern_value = override_pattern.strip()
     root_path = Path(root_value)
     if not root_path.is_absolute():
         root_path = base_dir / root_path
@@ -465,10 +596,29 @@ def main() -> None:
     output_root = Path(config.get("output_root", "writing_agent_outputs"))
 
     template = resolve_prompt(args.prompt, DEFAULT_PROMPTS)
-    prompt = template.prompt
+    prompt_meta = parse_prompt_directives(template.prompt)
+
+    def _block_copy(block: Optional[DirectiveBlock]) -> DirectiveBlock:
+        if block is None:
+            return DirectiveBlock(instructions="", parameters={})
+        return DirectiveBlock(
+            instructions=block.instructions,
+            parameters=dict(block.parameters),
+        )
+
+    def _directive(*names: str) -> DirectiveBlock:
+        for name in names:
+            block = prompt_meta.blocks.get(name)
+            if block and (block.instructions.strip() or block.parameters):
+                return _block_copy(block)
+        return DirectiveBlock(instructions="", parameters={})
+
+    main_request = prompt_meta.main_text.strip() or template.prompt.strip() or args.prompt
+
+    pipeline_directive = _directive("pipeline", "context", "data")
 
     try:
-        pipeline_file = _resolve_pipeline_file(template.scalars)
+        pipeline_file = _resolve_pipeline_file(template.scalars, pipeline_directive)
     except FileNotFoundError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -481,9 +631,17 @@ def main() -> None:
 
     raw_by_agent = agent_payloads.get("raw_by_agent", {})
 
+    directives_map = {
+        "global": _block_copy(prompt_meta.blocks.get("global")),
+        "strategy": _directive("strategy", "blueprint"),
+        "hook": _directive("hook", "angles"),
+        "writing": _directive("writing", "draft"),
+        "quality": _directive("quality", "qa"),
+    }
+
     crew = WritingAgentCrew()
     result = crew.run(
-        user_request=prompt,
+        user_request=main_request,
         pipeline_context=pipeline_context,
         data_triage_raw=agent_payloads.get("data_triage_raw")
         or _find_agent_raw(raw_by_agent, ["data", "triage"]),
@@ -494,12 +652,34 @@ def main() -> None:
         topic_curator_raw=agent_payloads.get("topic_curator_raw")
         or _find_agent_raw(raw_by_agent, ["topic", "curator"], match_any=True),
         dataset_id=pipeline_context.get("dataset_id"),
+        directives=directives_map,
     )
 
     saved_path = persist_result_if_json(result, output_root, stem="writing_agent")
+    payload = coerce_json_payload(result)
     print(serialize_result(result))
     if saved_path is not None:
         print(f"Saved output to {saved_path}", file=sys.stderr)
+        if (
+            args.export_raw_articles
+            and isinstance(payload, dict)
+        ):
+            raw_payload = payload.get("raw")
+            exported_files: List[Path] = []
+            if raw_payload:
+                try:
+                    exported_files = _export_articles_from_raw(raw_payload, saved_path)
+                except OSError as exc:
+                    print(
+                        f"Failed to export platform articles: {exc}",
+                        file=sys.stderr,
+                    )
+            if exported_files:
+                export_dir = saved_path.with_suffix("")
+                print(
+                    f"Exported {len(exported_files)} article text files to {export_dir}",
+                    file=sys.stderr,
+                )
 
 
 if __name__ == "__main__":

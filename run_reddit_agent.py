@@ -5,20 +5,23 @@ import argparse
 import os
 import sys
 from pathlib import Path
+from typing import Optional
 
 os.environ.setdefault("CREWAI_TELEMETRY_DISABLED", "true")
 os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
 
+from cli_common import (
+    DirectiveBlock,
+    load_config,
+    parse_prompt_directives,
+    persist_result_if_json,
+    resolve_prompt,
+    serialize_result,
+)
 from crews.reddit_scraper import RedditScraperCrew
 from crews.reddit_scraper.tools import (
     get_tool_execution_log,
     reset_tool_execution_log,
-)
-from cli_common import (
-    load_config,
-    persist_result_if_json,
-    resolve_prompt,
-    serialize_result,
 )
 
 
@@ -42,11 +45,30 @@ def main() -> None:
     args = parse_args()
     config = load_config(CONFIG_PATH)
     output_root = Path(config.get("output_root", "scraepr_outputs"))
-    crew = RedditScraperCrew()
     reset_tool_execution_log()
     template = resolve_prompt(args.prompt, DEFAULT_PROMPTS)
-    prompt = template.prompt
-    result = crew.run(prompt)
+    prompt_meta = parse_prompt_directives(template.prompt)
+
+    def _block_copy(block: Optional[DirectiveBlock]) -> DirectiveBlock:
+        if block is None:
+            return DirectiveBlock(instructions="", parameters={})
+        return DirectiveBlock(
+            instructions=block.instructions,
+            parameters=dict(block.parameters),
+        )
+
+    main_request = prompt_meta.main_text.strip() or template.prompt.strip() or args.prompt
+    directives_map = {
+        "global": _block_copy(prompt_meta.blocks.get("global")),
+        "scraper": _block_copy(
+            prompt_meta.blocks.get("scraper")
+            or prompt_meta.blocks.get("reddit")
+            or prompt_meta.blocks.get("fetch")
+        ),
+    }
+
+    crew = RedditScraperCrew()
+    result = crew.run(main_request, directives=directives_map)
     tool_outputs = get_tool_execution_log()
 
     errors = [entry for entry in tool_outputs if isinstance(entry["payload"], dict) and entry["payload"].get("status") == "error"]
