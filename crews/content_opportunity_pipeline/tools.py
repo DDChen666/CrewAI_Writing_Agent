@@ -13,7 +13,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Type, Union
 from typing import Literal
 
 import requests
@@ -343,25 +343,40 @@ def _summary_to_preview(summary: Mapping[str, Any]) -> Dict[str, Any]:
     """Project a lightweight preview payload from a post summary."""
 
     preview: Dict[str, Any] = {
-        "dataset_id": summary.get("dataset_id"),
+        "post_id": summary.get("post_id"),
+        "score": summary.get("score"),
+        "created_utc": summary.get("created_utc"),
+        "created_at_iso": summary.get("created_at_iso"),
+        "subreddit": summary.get("subreddit"),
+        "pointer": _resolve_field(summary, "raw_pointer.post_pointer"),
+    }
+    return {key: value for key, value in preview.items() if value is not None}
+
+
+def _project_lookup_item(
+    summary: Mapping[str, Any],
+    *,
+    mode: str,
+    requested_fields: Optional[Sequence[str]] = None,
+) -> Dict[str, Any]:
+    if mode == "full":
+        return dict(summary)
+
+    if mode == "custom" and requested_fields:
+        projection: Dict[str, Any] = {}
+        for field in requested_fields:
+            if field == "*":
+                return dict(summary)
+            projection[field] = _resolve_field(summary, field)
+        if "post_id" not in projection:
+            projection["post_id"] = summary.get("post_id")
+        return projection
+
+    return {
         "post_id": summary.get("post_id"),
         "title": summary.get("title"),
-        "permalink": summary.get("permalink"),
         "score": summary.get("score"),
-        "num_comments": summary.get("num_comments"),
-        "body_preview": summary.get("body_preview"),
-        "raw_pointer": summary.get("raw_pointer"),
     }
-    top_level_comment_count = summary.get("top_level_comment_count")
-    if top_level_comment_count is not None:
-        preview["top_level_comment_count"] = top_level_comment_count
-    subreddit = summary.get("subreddit")
-    if subreddit is not None:
-        preview["subreddit"] = subreddit
-    created_at_iso = summary.get("created_at_iso")
-    if created_at_iso is not None:
-        preview["created_at_iso"] = created_at_iso
-    return {key: value for key, value in preview.items() if value is not None}
 
 
 def _build_preview_items(
@@ -745,6 +760,9 @@ class FieldSelection(RootModel[List[str]]):
     root: List[str]
 
 
+_FIELDS_DEFAULT_SENTINEL = "__fields_param_not_supplied__"
+
+
 class FilterCondition(BaseModel):
     field: str = Field(..., description="Dotted field path inside the normalised post structure")
     operator: str = Field(
@@ -823,6 +841,13 @@ class RedditDatasetLookupArgs(BaseModel):
         description="Maximum number of posts to return when post_ids is not supplied. Defaults to 20 when omitted.",
     )
     include_metadata: bool = Field(False, description="Whether to include dataset metadata in the response")
+    fields: Union[List[str], str, None] = Field(
+        _FIELDS_DEFAULT_SENTINEL,
+        description=(
+            "List of summary fields to include in each item. When omitted, a minimal payload with post_id, title and score is returned. "
+            "Set to null or ['*'] to request the full summary. Nested fields can be addressed using dotted paths."
+        ),
+    )
 
 
 class ContentExplorerArgs(BaseModel):
@@ -1325,7 +1350,17 @@ class RedditDatasetFilterTool(BaseTool):
         new_dataset_id = _DATASET_STORE.new_dataset_id()
         _DATASET_STORE.store(new_dataset_id, working_items, new_metadata, raw_subset)
 
-        preview = working_items[: min(len(working_items), 5)]
+        preview: List[Dict[str, Any]] = []
+        for item in working_items[: min(len(working_items), 5)]:
+            preview.append(
+                {
+                    "pointer": _resolve_field(item, "raw_pointer.post_pointer"),
+                    "post_id": item.get("post_id"),
+                    "score": item.get("score"),
+                    "created_utc": item.get("created_utc"),
+                    "subreddit": item.get("subreddit"),
+                }
+            )
 
         return json.dumps(
             {
@@ -1431,6 +1466,7 @@ class RedditDatasetLookupTool(BaseTool):
         post_ids: Optional[List[str]] = None,
         limit: Optional[int] = None,
         include_metadata: bool = False,
+        fields: Union[List[str], str, None] = _FIELDS_DEFAULT_SENTINEL,
     ) -> str:
         try:
             dataset = _DATASET_STORE.get(dataset_id)
@@ -1459,17 +1495,56 @@ class RedditDatasetLookupTool(BaseTool):
                 truncated = total_available > applied_limit
                 working_items = working_items[:applied_limit]
 
+        projection_mode = "minimal"
+        requested_fields: Optional[List[str]] = None
+
+        if fields == _FIELDS_DEFAULT_SENTINEL:
+            pass
+        elif fields is None:
+            projection_mode = "full"
+        elif isinstance(fields, str):
+            token = fields.strip()
+            if token == "*":
+                projection_mode = "full"
+            elif token:
+                projection_mode = "custom"
+                requested_fields = [token]
+        elif isinstance(fields, list):
+            cleaned: List[str] = []
+            for entry in fields:
+                if not isinstance(entry, str):
+                    continue
+                token = entry.strip()
+                if not token:
+                    continue
+                if token == "*":
+                    projection_mode = "full"
+                    cleaned = []
+                    break
+                cleaned.append(token)
+            if projection_mode != "full" and cleaned:
+                projection_mode = "custom"
+                requested_fields = cleaned
+
+        projected_items = [
+            _project_lookup_item(item, mode=projection_mode, requested_fields=requested_fields)
+            for item in working_items
+        ]
+
         payload: Dict[str, Any] = {
             "status": "success",
             "tool": self.name,
             "dataset_id": dataset_id,
             "item_count": len(working_items),
-            "items": working_items,
+            "items": projected_items,
         }
         if applied_limit is not None:
             payload["applied_limit"] = applied_limit
         payload["total_available"] = total_available
         payload["truncated"] = truncated
+        payload["projection_mode"] = projection_mode
+        if requested_fields is not None:
+            payload["requested_fields"] = requested_fields
         if include_metadata:
             payload["metadata"] = dataset.metadata
 

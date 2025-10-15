@@ -6,6 +6,8 @@ from typing import Any, Dict, Optional
 
 from crewai import Crew
 
+from cli_common import DirectiveBlock
+
 from .agents import build_writing_team
 from .tasks import (
     build_hook_task,
@@ -19,22 +21,76 @@ class WritingAgentCrew:
     """High-level orchestrator that generates platform-ready rewrites."""
 
     def __init__(self) -> None:
+        self.crew: Optional[Crew] = None
+        self.final_task = None
+
+    @staticmethod
+    def _safe_block(
+        directives: Optional[Dict[str, DirectiveBlock]],
+        key: str,
+    ) -> DirectiveBlock:
+        if directives is None:
+            return DirectiveBlock(instructions="", parameters={})
+        block = directives.get(key)
+        if block is None:
+            return DirectiveBlock(instructions="", parameters={})
+        return DirectiveBlock(instructions=block.instructions, parameters=dict(block.parameters))
+
+    def _build_crew(self, directives: Optional[Dict[str, DirectiveBlock]]) -> Crew:
+        global_block = self._safe_block(directives, "global")
+
+        def _merge(block: DirectiveBlock) -> DirectiveBlock:
+            instructions_parts = [global_block.instructions.strip(), block.instructions.strip()]
+            merged_instructions = "\n\n".join(
+                part for part in instructions_parts if part
+            ).strip()
+            merged_parameters = dict(global_block.parameters)
+            merged_parameters.update(block.parameters)
+            return DirectiveBlock(
+                instructions=merged_instructions,
+                parameters=merged_parameters,
+            )
+
+        strategy_block = _merge(self._safe_block(directives, "strategy"))
+        hook_block = _merge(self._safe_block(directives, "hook"))
+        writing_block = _merge(self._safe_block(directives, "writing"))
+        quality_block = _merge(self._safe_block(directives, "quality"))
+
         team = build_writing_team()
-        strategy_task = build_strategy_task(team["editor_in_chief"])
-        hook_task = build_hook_task(team["hook_architect"], strategy_task)
+        strategy_task = build_strategy_task(
+            team["editor_in_chief"],
+            instructions=strategy_block.instructions,
+            parameters=strategy_block.parameters,
+        )
+        hook_task = build_hook_task(
+            team["hook_architect"],
+            strategy_task,
+            instructions=hook_block.instructions,
+            parameters=hook_block.parameters,
+        )
         writing_task = build_writing_task(
-            team["master_writer"], strategy_task, hook_task
+            team["master_writer"],
+            strategy_task,
+            hook_task,
+            instructions=writing_block.instructions,
+            parameters=writing_block.parameters,
         )
         quality_task = build_quality_task(
-            team["editorial_guardian"], strategy_task, hook_task, writing_task
+            team["editorial_guardian"],
+            strategy_task,
+            hook_task,
+            writing_task,
+            instructions=quality_block.instructions,
+            parameters=quality_block.parameters,
         )
 
-        self.crew = Crew(
+        crew = Crew(
             agents=list(team.values()),
             tasks=[strategy_task, hook_task, writing_task, quality_task],
             verbose=True,
         )
         self.final_task = quality_task
+        return crew
 
     def _condense_context(self, pipeline_context: Dict[str, Any]) -> str:
         """Return a compact JSON string with only the essentials for prompting.
@@ -42,6 +98,11 @@ class WritingAgentCrew:
         Keeps: source_file, dataset_id, top opportunities with short rationales,
         and topic briefs with limited angles and a capped set of reference links.
         """
+        def _trim_text(text: Any, limit: int = 480) -> Any:
+            if isinstance(text, str) and len(text) > limit:
+                return text[:limit] + "…"
+            return text
+
         try:
             source_file = pipeline_context.get("source_file")
             dataset_id = pipeline_context.get("dataset_id")
@@ -49,11 +110,55 @@ class WritingAgentCrew:
             scored = pipeline_context.get("scored_and_filtered_opportunities") or {}
             opps = []
             for opp in (scored.get("opportunities") or [])[:5]:
-                topic = opp.get("topic")
-                reason = opp.get("reason_for_selection")
-                if isinstance(reason, str) and len(reason) > 360:
-                    reason = reason[:360] + "…"
-                opps.append({"topic": topic, "reason_for_selection": reason})
+                entry: Dict[str, Any] = {
+                    "cluster_id": opp.get("cluster_id"),
+                    "name": opp.get("name")
+                    or opp.get("topic")
+                    or opp.get("topic_title"),
+                }
+                for score_key in (
+                    "brand_fit_score",
+                    "icp_alignment_score",
+                    "icp_fit_score",
+                    "relevance_score",
+                    "risk_score",
+                    "audience_alignment_score",
+                ):
+                    if score_key in opp:
+                        entry[score_key] = opp.get(score_key)
+
+                qualitative = opp.get("qualitative_rationale") or opp.get(
+                    "justification"
+                )
+                if isinstance(qualitative, dict):
+                    entry["qualitative_rationale"] = {
+                        key: _trim_text(value)
+                        for key, value in qualitative.items()
+                        if isinstance(value, str)
+                    }
+
+                selection_fields = [
+                    "selection_justification",
+                    "summary",
+                    "reason",
+                    "reason_for_selection",
+                    "recommendation",
+                ]
+                for field in selection_fields:
+                    value = opp.get(field)
+                    if isinstance(value, str) and value.strip():
+                        entry[field] = _trim_text(value)
+                        break
+
+                action_items = opp.get("actionable_insights") or opp.get(
+                    "recommended_actions"
+                )
+                if isinstance(action_items, list) and action_items:
+                    entry["actionable_insights"] = [
+                        _trim_text(item) for item in action_items[:5]
+                    ]
+
+                opps.append(entry)
 
             briefs = []
             for brief in (pipeline_context.get("prioritized_topic_briefs") or [])[:5]:
@@ -63,14 +168,29 @@ class WritingAgentCrew:
                 trimmed_angles = []
                 for a in angles[:3]:
                     trimmed_angles.append(a if len(a) <= 240 else a[:240] + "…")
+                funnel_focus = brief.get("funnel_focus")
+                if isinstance(funnel_focus, list):
+                    funnel_value: Any = funnel_focus[:5]
+                else:
+                    funnel_value = funnel_focus
                 briefs.append(
                     {
                         "topic_title": brief.get("topic_title"),
-                        "funnel_focus": brief.get("funnel_focus"),
+                        "funnel_focus": funnel_value,
                         "editorial_angles": trimmed_angles,
                         "reference_links": refs[:12],
+                        "supporting_insights": [
+                            _trim_text(insight)
+                            for insight in (brief.get("supporting_insights") or [])[:5]
+                        ],
                     }
                 )
+
+            curator_notes = pipeline_context.get("prioritized_topic_briefs_notes")
+            if isinstance(curator_notes, str):
+                curator_notes = _trim_text(curator_notes, limit=640)
+            else:
+                curator_notes = None
 
             compact = {
                 "source_file": source_file,
@@ -78,6 +198,12 @@ class WritingAgentCrew:
                 "scored_and_filtered_opportunities": {"opportunities": opps},
                 "prioritized_topic_briefs": briefs,
             }
+            if curator_notes:
+                compact["prioritized_topic_briefs_notes"] = curator_notes
+            if isinstance(scored, dict):
+                report_id = scored.get("originating_report_id")
+                if report_id:
+                    compact["scored_and_filtered_opportunities"]["originating_report_id"] = report_id
             return json.dumps(compact, ensure_ascii=False)
         except Exception:
             # Fallback to the minimal pointer if anything unexpected happens
@@ -86,6 +212,43 @@ class WritingAgentCrew:
                 "dataset_id": pipeline_context.get("dataset_id"),
             }
             return json.dumps(minimal, ensure_ascii=False)
+
+    def _validate_pipeline_context(self, pipeline_context: Dict[str, Any]) -> None:
+        if not isinstance(pipeline_context, dict):
+            raise ValueError(
+                "WritingAgentCrew requires pipeline_context to be a dictionary."
+            )
+
+        missing: list[str] = []
+
+        dataset_id = pipeline_context.get("dataset_id")
+        if not isinstance(dataset_id, str) or not dataset_id.strip():
+            missing.append("dataset_id")
+
+        briefs = pipeline_context.get("prioritized_topic_briefs")
+        if not self._is_non_empty_sequence(briefs):
+            missing.append("prioritized_topic_briefs")
+
+        scored = pipeline_context.get("scored_and_filtered_opportunities")
+        opportunities = None
+        if isinstance(scored, dict):
+            opportunities = scored.get("opportunities") or scored.get(
+                "scored_opportunities"
+            )
+        if not self._is_non_empty_sequence(opportunities):
+            missing.append("scored_and_filtered_opportunities.opportunities")
+
+        if missing:
+            raise ValueError(
+                "WritingAgentCrew requires pipeline_context to include: "
+                + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _is_non_empty_sequence(value: Any) -> bool:
+        if isinstance(value, (list, tuple, set)):
+            return len(value) > 0
+        return False
 
     def run(
         self,
@@ -97,8 +260,15 @@ class WritingAgentCrew:
         brand_alignment_raw: Optional[str] = None,
         topic_curator_raw: Optional[str] = None,
         dataset_id: Optional[str] = None,
+        directives: Optional[Dict[str, DirectiveBlock]] = None,
     ) -> Any:
         """Execute the crew with the supplied rewrite instructions and context."""
+
+        self._validate_pipeline_context(pipeline_context)
+
+        crew = self._build_crew(directives)
+        self.crew = crew
+        global_block = self._safe_block(directives, "global")
 
         # Build a condensed prompt context to reduce input token load
         context_json = self._condense_context(pipeline_context)
@@ -111,8 +281,9 @@ class WritingAgentCrew:
             "brand_alignment_raw": "",
             "topic_curator_raw": "",
             "dataset_id": dataset_id or "",
+            "global_operator_notes": global_block.instructions,
         }
-        return self.crew.kickoff(inputs=inputs)
+        return crew.kickoff(inputs=inputs)
 
 
 __all__ = ["WritingAgentCrew"]

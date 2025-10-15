@@ -7,7 +7,7 @@ from collections import deque
 from contextlib import contextmanager
 from typing import Deque, Optional
 
-GEMINI_RPM_LIMIT = 10
+GEMINI_RPM_LIMIT = 8  # Gemini API requests per minute
 _RATE_LIMIT_WINDOW = 60.0
 
 

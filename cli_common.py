@@ -4,9 +4,10 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:  # pragma: no cover - platform guard
     from zoneinfo import ZoneInfo
@@ -22,6 +23,23 @@ class PromptTemplate:
 
     prompt: str
     scalars: Dict[str, Optional[str]]
+
+
+@dataclass
+class DirectiveBlock:
+    """Instructions and structured parameters extracted for a prompt section."""
+
+    instructions: str
+    parameters: Dict[str, Any]
+
+
+@dataclass
+class PromptDirectives:
+    """Parsed representation of a prompt broken into regional directive blocks."""
+
+    main_text: str
+    blocks: Dict[str, DirectiveBlock]
+    raw_prompt: str
 
 
 def _extract_top_level_scalars(lines: List[str]) -> Dict[str, Optional[str]]:
@@ -197,6 +215,94 @@ def ensure_output_path(root: Path, stem: str) -> Path:
 def write_output(path: Path, payload: Any) -> None:
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, ensure_ascii=False, indent=2)
+
+
+_SECTION_HEADER_PATTERN = re.compile(r"^\s*\[([A-Za-z0-9][A-Za-z0-9_\- ]*)\]\s*(.*)$")
+_KEY_VALUE_PATTERN = re.compile(r"^\s*([A-Za-z0-9_\-\.]+)\s*(?:=|:)\s*(.+?)\s*$")
+
+
+def _normalise_section_name(name: str) -> str:
+    normalised = re.sub(r"[^a-z0-9]+", "_", name.strip().lower())
+    return normalised.strip("_") or "global"
+
+
+def _parse_sections_from_prompt(prompt: str) -> Dict[str, List[str]]:
+    sections: Dict[str, List[str]] = {"global": []}
+    current = "global"
+    for raw_line in prompt.splitlines():
+        match = _SECTION_HEADER_PATTERN.match(raw_line)
+        if match:
+            section_name = _normalise_section_name(match.group(1))
+            remainder = match.group(2).strip()
+            current = section_name
+            sections.setdefault(current, [])
+            if remainder:
+                sections[current].append(remainder)
+            continue
+        sections.setdefault(current, []).append(raw_line)
+    return sections
+
+
+def _split_instructions_and_parameters(text: str) -> Tuple[str, Dict[str, Any]]:
+    stripped = text.strip()
+    if not stripped:
+        return "", {}
+
+    # Attempt to decode JSON directives first
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        decoded = None
+
+    if isinstance(decoded, dict):
+        return "", decoded
+
+    parameters: Dict[str, Any] = {}
+    instruction_lines: List[str] = []
+    for raw_line in stripped.splitlines():
+        match = _KEY_VALUE_PATTERN.match(raw_line)
+        if match:
+            key = match.group(1).strip().lower()
+            value = match.group(2).strip()
+            parameters[key] = value
+        else:
+            instruction_lines.append(raw_line)
+
+    instructions = "\n".join(instruction_lines).strip()
+    return instructions, parameters
+
+
+def parse_prompt_directives(prompt: str) -> PromptDirectives:
+    """
+    Break a free-form prompt into directive sections using `[section]` headers.
+
+    Example:
+        Overall instructions here
+
+        [data_triage]
+        target_files = reddit_ai.json
+        Limit results to high engagement threads.
+
+    Returns a structure containing a main request plus per-section directives.
+    """
+
+    sections = _parse_sections_from_prompt(prompt)
+    blocks: Dict[str, DirectiveBlock] = {}
+    main_text = ""
+
+    for name, lines in sections.items():
+        joined = "\n".join(lines).strip()
+        instructions, parameters = _split_instructions_and_parameters(joined)
+        block = DirectiveBlock(instructions=instructions, parameters=parameters)
+        blocks[name] = block
+        if name == "global":
+            main_text = instructions or joined
+
+    return PromptDirectives(
+        main_text=main_text.strip(),
+        blocks=blocks,
+        raw_prompt=prompt,
+    )
 
 
 def coerce_json_payload(result: Any) -> Optional[Any]:
